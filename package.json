@@ -1,0 +1,15 @@
+{
+  "name": "trailmark-live",
+  "version": "1.0.0",
+  "description": "TrailMark's Discover tab as a standalone app, backed by live OpenStreetMap trail data.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
