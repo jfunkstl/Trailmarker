@@ -17,17 +17,46 @@ body {
   color: var(--ink);
   font-family: 'Barlow', sans-serif;
   padding-bottom: 84px;
+  position: relative;
+}
+body::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 84px;
+  height: 44px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='60' viewBox='0 0 120 60'><path fill='%231B4332' d='M20,60 L28,38 L22,38 L30,20 L24,20 L32,4 L40,20 L34,20 L42,38 L36,38 L44,60 Z'/><path fill='%231B4332' d='M70,60 L78,42 L72,42 L80,26 L74,26 L82,12 L90,26 L84,26 L92,42 L86,42 L94,60 Z'/></svg>");
+  background-repeat: repeat-x;
+  background-position: bottom;
+  background-size: 120px 44px;
+  opacity: 0.06;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .poster-title { font-family: 'Abril Fatface', serif; margin: 0; }
 .condensed { font-family: 'Barlow Condensed', sans-serif; }
 
 .hero {
+  position: relative;
+  overflow: hidden;
   background: linear-gradient(180deg, #2B2E4A 0%, #7A5570 45%, #C97B63 75%, #E3B23C 100%);
   padding: 36px 16px 28px;
   text-align: center;
   border-radius: 0 0 28px 28px;
 }
+.hero-scene {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.hero-scene .peak-back { fill: #6b5a7a; opacity: 0.85; }
+.hero-scene .peak-front { fill: #16342a; }
+.hero-scene .pines { fill: #0f2a1f; }
+.hero-scene .sun { fill: #E3B23C; opacity: 0.55; }
+.hero .poster-title, .hero .subtitle { position: relative; z-index: 1; }
 .hero .poster-title {
   color: #FBF6EC;
   font-size: 2.6rem;
@@ -45,6 +74,8 @@ main {
   max-width: 640px;
   margin: 0 auto;
   padding: 16px 16px 40px;
+  position: relative;
+  z-index: 1;
 }
 
 .stat-line {
@@ -60,54 +91,80 @@ main {
 .tab-panel.hidden { display: none; }
 
 /* ---- track ---- */
+.trail-picker { margin-bottom: 12px; }
+.trail-picker select { width: 100%; }
+
 .track-card {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 20px;
-  padding: 30px 20px;
-  text-align: center;
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
-.track-card .eyebrow {
+.track-readout { flex: 1; text-align: left; }
+.track-readout .eyebrow {
   text-transform: uppercase;
-  letter-spacing: 0.2em;
-  font-size: 0.75rem;
+  letter-spacing: 0.15em;
+  font-size: 0.7rem;
   opacity: 0.6;
-  margin: 0 0 6px;
+  margin: 0 0 4px;
 }
-.track-card .timer {
-  font-size: 3.2rem;
-  font-weight: 600;
-  margin: 6px 0;
-}
-.track-card .distance {
-  font-size: 1.3rem;
-  color: var(--pine);
-  margin: 0;
-}
+.track-readout-row { display: flex; align-items: baseline; gap: 14px; }
+.track-readout .timer { font-size: 2rem; font-weight: 600; margin: 0; }
+.track-readout .distance { font-size: 1.1rem; color: var(--pine); margin: 0; }
 .gps-note {
   font-size: 0.8rem;
   background: #F3DCC4;
   color: #8a5a10;
   border-radius: 8px;
   padding: 8px 12px;
-  margin: 12px 0 0;
+  margin: 10px 0 0;
   display: none;
 }
 .gps-note.show { display: inline-block; }
 .record-btn {
-  margin-top: 22px;
-  width: 84px;
-  height: 84px;
+  flex-shrink: 0;
+  width: 60px;
+  height: 60px;
   border-radius: 50%;
   border: none;
   background: var(--mustard);
   color: white;
-  font-size: 1.6rem;
+  font-size: 1.2rem;
   cursor: pointer;
   box-shadow: 0 4px 14px rgba(0,0,0,0.15);
 }
 .record-btn.recording { background: var(--clay); }
 .record-btn:active { transform: scale(0.96); }
+
+.stats-strip {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+.stat-box {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 8px;
+  text-align: center;
+}
+.stat-box .stat-value {
+  display: block;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 1.3rem;
+  color: var(--pine);
+}
+.stat-box .stat-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  opacity: 0.65;
+}
 .track-card .hint {
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -168,6 +225,7 @@ main {
   color: var(--ink);
 }
 .seg.active { background: var(--pine); color: white; }
+.segmented.small { width: fit-content; margin-bottom: 10px; }
 
 /* ---- search / filters ---- */
 .search-row {
@@ -383,3 +441,27 @@ textarea {
   letter-spacing: 0.03em;
   z-index: 60;
 }
+
+/* ---- maps (Leaflet) ---- */
+.map-wrap {
+  margin-top: 16px;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+.map-wrap.hidden { display: none; }
+.leaflet-map {
+  width: 100%;
+  height: 220px;
+  background: var(--card);
+}
+.leaflet-map.tall { height: 320px; }
+.modal-map {
+  width: 100%;
+  height: 300px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.map-btn-row { margin-top: 6px; }
