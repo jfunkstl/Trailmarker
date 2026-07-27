@@ -3,46 +3,33 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TrailMark Live</title>
+  <title>Trailseeker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <header class="hero">
-    <h1 class="poster-title">TRAILMARK LIVE</h1>
-    <p class="condensed subtitle">Track · Journal · Discover</p>
+    <svg class="hero-scene" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
+      <polygon points="0,140 0,70 60,20 120,80 170,35 230,90 280,45 340,85 400,55 400,140" class="peak peak-back"/>
+      <polygon points="0,140 0,95 70,50 140,105 210,60 280,110 340,75 400,100 400,140" class="peak peak-front"/>
+      <g class="pines">
+        <path d="M30,140 L38,120 L32,120 L40,102 L34,102 L42,86 L50,102 L44,102 L52,120 L46,120 L54,140 Z"/>
+        <path d="M355,140 L363,116 L357,116 L365,96 L359,96 L367,78 L375,96 L369,96 L377,116 L371,116 L379,140 Z"/>
+        <path d="M370,140 L376,124 L372,124 L378,110 L374,110 L380,98 L386,110 L382,110 L388,124 L384,124 L390,140 Z"/>
+      </g>
+      <circle cx="335" cy="30" r="16" class="sun"/>
+    </svg>
+    <h1 class="poster-title">TRAILSEEKER</h1>
+    <p class="condensed subtitle">Seek your next adventure</p>
   </header>
 
   <main>
     <p class="stat-line" id="statLine"></p>
 
-    <!-- TRACK -->
-    <section id="tab-track" class="tab-panel">
-      <div class="track-card">
-        <p class="condensed eyebrow" id="trackState">Ready when you are</p>
-        <p class="condensed timer" id="timerDisplay">0:00</p>
-        <p class="condensed distance" id="distanceDisplay">0 m</p>
-        <p class="gps-note" id="gpsNote"></p>
-        <button id="trackBtn" class="record-btn" aria-label="Start tracking">
-          <span id="trackBtnIcon">▶</span>
-        </button>
-        <p class="condensed hint" id="trackHint">Tap to start tracking</p>
-      </div>
-      <p class="fine-print">Uses your device's location to trace the route and measure distance as you walk. If location isn't available, you'll still get a timer.</p>
-    </section>
-
-    <!-- JOURNAL -->
-    <section id="tab-journal" class="tab-panel hidden">
-      <div class="section-head">
-        <h2 class="poster-title">Journal</h2>
-        <button id="addHikeBtn" class="pill-btn pine">+ Add</button>
-      </div>
-      <div id="journalList" class="results"></div>
-    </section>
-
     <!-- DISCOVER -->
-    <section id="tab-discover" class="tab-panel hidden">
+    <section id="tab-discover" class="tab-panel">
       <div class="section-head">
         <h2 class="poster-title">Discover</h2>
         <div class="segmented">
@@ -52,6 +39,10 @@
       </div>
 
       <div id="discoverSearch">
+        <div class="segmented small" id="searchModeToggle">
+          <button class="seg active" data-mode="name">Trail name</button>
+          <button class="seg" data-mode="city">City</button>
+        </div>
         <div class="search-row">
           <input id="query" type="text" placeholder="Search trail name (optional)" />
           <select id="state"></select>
@@ -72,17 +63,74 @@
         <div id="savedList" class="results"></div>
       </div>
     </section>
+
+    <!-- TRACK -->
+    <section id="tab-track" class="tab-panel hidden">
+      <div class="section-head">
+        <h2 class="poster-title">Track</h2>
+      </div>
+
+      <label class="field trail-picker">
+        <span class="label">Following</span>
+        <select id="trailPicker">
+          <option value="">Freehand (no saved route)</option>
+        </select>
+      </label>
+
+      <div class="track-card">
+        <button id="trackBtn" class="record-btn" aria-label="Start tracking">
+          <span id="trackBtnIcon">▶</span>
+        </button>
+        <div class="track-readout">
+          <p class="condensed eyebrow" id="trackState">Ready when you are</p>
+          <div class="track-readout-row">
+            <span class="condensed timer" id="timerDisplay">0:00</span>
+            <span class="condensed distance" id="distanceDisplay">0 m</span>
+          </div>
+        </div>
+      </div>
+      <p class="gps-note" id="gpsNote"></p>
+
+      <div id="trackMapWrap" class="map-wrap">
+        <div id="trackMap" class="leaflet-map tall"></div>
+      </div>
+
+      <div class="stats-strip">
+        <div class="stat-box">
+          <span class="stat-value" id="statDistance">0 m</span>
+          <span class="condensed stat-label">Distance</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-value" id="statTime">0:00</span>
+          <span class="condensed stat-label">Time</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-value" id="statCalories">0</span>
+          <span class="condensed stat-label">Calories (approx.)</span>
+        </div>
+      </div>
+      <p class="fine-print">Uses your device's location to trace the route and measure distance as you walk. Calorie estimate is a general approximation, not personalized.</p>
+    </section>
+
+    <!-- JOURNAL -->
+    <section id="tab-journal" class="tab-panel hidden">
+      <div class="section-head">
+        <h2 class="poster-title">Journal</h2>
+        <button id="addHikeBtn" class="pill-btn pine">+ Add</button>
+      </div>
+      <div id="journalList" class="results"></div>
+    </section>
   </main>
 
   <nav class="bottom-nav">
-    <button class="nav-btn active" data-tab="track">
+    <button class="nav-btn active" data-tab="discover">
+      <span class="nav-icon">🔎</span><span class="condensed nav-label">Discover</span>
+    </button>
+    <button class="nav-btn" data-tab="track">
       <span class="nav-icon">🧭</span><span class="condensed nav-label">Track</span>
     </button>
     <button class="nav-btn" data-tab="journal">
       <span class="nav-icon">📓</span><span class="condensed nav-label">Journal</span>
-    </button>
-    <button class="nav-btn" data-tab="discover">
-      <span class="nav-icon">🔎</span><span class="condensed nav-label">Discover</span>
     </button>
   </nav>
 
@@ -98,6 +146,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
