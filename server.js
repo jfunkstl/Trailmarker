@@ -139,7 +139,7 @@ app.get("/api/trails", async (req, res) => {
   }
 });
 
-app.use(express.static(path.join(__dirname, "public")));
+app.uapp.use(express.static(__dirname));
 
 app.listen(PORT, () => {
   console.log(`TrailMark Live running at http://localhost:${PORT}`);
