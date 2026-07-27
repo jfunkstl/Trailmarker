@@ -93,7 +93,7 @@ app.get("/api/trails", async (req, res) => {
 
     if (!resp.ok) {
       const detail = await resp.text();
-      return res.status(502).json({ error: "Overpass API returned an error", detail: detail.slice(0, 300) });
+      return res.status(502).json({ error: "Overpass API returned an error", detail: detail.slice(0, 1500) });
     }
 
     const data = await resp.json();
