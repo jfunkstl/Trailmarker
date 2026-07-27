@@ -7,7 +7,12 @@ import { STATE_ISO, STATE_LIST } from "./states.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
-const OVERPASS_URL = process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter";
+const OVERPASS_URLS = [
+  process.env.OVERPASS_URL,
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+  "https://overpass.openstreetmap.ru/api/interpreter",
+].filter(Boolean);
 
 // Simple in-memory cache so repeat searches don't hammer the public Overpass
 // endpoint (it's free, shared infrastructure and rate-limits aggressively).
@@ -81,22 +86,37 @@ app.get("/api/trails", async (req, res) => {
   `.trim();
 
   try {
-    const resp = await fetch(OVERPASS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain",
-        "User-Agent": "TrailMark/1.0 (https://github.com/jfunkstl/Trailmarker)",
-        "Accept": "application/json, text/plain, */*",
-      },
-      body: overpassQuery,
-    });
+    let data = null;
+    let lastError = null;
 
-    if (!resp.ok) {
-      const detail = await resp.text();
-      return res.status(502).json({ error: "Overpass API returned an error", detail: detail.slice(0, 1500) });
+    for (const url of OVERPASS_URLS) {
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            "User-Agent": "TrailMark/1.0 (https://github.com/jfunkstl/Trailmarker)",
+            "Accept": "application/json, text/plain, */*",
+          },
+          body: overpassQuery,
+        });
+
+        if (!resp.ok) {
+          lastError = await resp.text();
+          continue;
+        }
+
+        data = await resp.json();
+        break;
+      } catch (innerErr) {
+        lastError = String(innerErr.message || innerErr);
+        continue;
+      }
     }
 
-    const data = await resp.json();
+    if (!data) {
+      return res.status(502).json({ error: "All Overpass mirrors are busy right now — please try again in a minute.", detail: (lastError || "").slice(0, 500) });
+                                 }
     const elements = data.elements || [];
 
     const byName = new Map();
