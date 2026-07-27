@@ -83,7 +83,11 @@ app.get("/api/trails", async (req, res) => {
   try {
     const resp = await fetch(OVERPASS_URL, {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
+      headers: {
+        "Content-Type": "text/plain",
+        "User-Agent": "TrailMark/1.0 (https://github.com/jfunkstl/Trailmarker)",
+        "Accept": "application/json, text/plain, */*",
+      },
       body: overpassQuery,
     });
 
