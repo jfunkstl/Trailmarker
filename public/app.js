@@ -49,7 +49,7 @@ function updateStatLine() {
 }
 
 // ---------- tab switching ----------
-const tabs = ["track", "journal", "discover"];
+const tabs = ["discover", "track", "journal"];
 function switchTab(tab) {
   tabs.forEach((t) => {
     document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
@@ -57,6 +57,7 @@ function switchTab(tab) {
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
+  if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -87,14 +88,72 @@ let path = [];
 let lastPoint = null;
 let watchId = null;
 let timerId = null;
+let followedTrail = null; // saved trail currently shown as the target route
 
 const trackBtn = document.getElementById("trackBtn");
 const trackBtnIcon = document.getElementById("trackBtnIcon");
 const timerDisplay = document.getElementById("timerDisplay");
 const distanceDisplay = document.getElementById("distanceDisplay");
 const trackState = document.getElementById("trackState");
-const trackHint = document.getElementById("trackHint");
 const gpsNote = document.getElementById("gpsNote");
+const statDistance = document.getElementById("statDistance");
+const statTime = document.getElementById("statTime");
+const statCalories = document.getElementById("statCalories");
+const trailPicker = document.getElementById("trailPicker");
+
+// Rough general estimate, not personalized: about 62 kcal per km of hiking
+// (roughly the commonly-cited ~100 kcal/mile average for a moderate pace).
+const caloriesFromKm = (km) => Math.round(km * 62);
+
+let trackMap = null;
+let routeLine = null; // the saved/target trail, drawn once
+let walkedLine = null; // the live path you've actually walked
+let liveDot = null;
+
+function ensureTrackMap() {
+  if (trackMap) return trackMap;
+  trackMap = L.map("trackMap", { attributionControl: false }).setView([39.5, -98.35], 4);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(trackMap);
+  walkedLine = L.polyline([], { color: "#1B4332", weight: 5 }).addTo(trackMap);
+  return trackMap;
+}
+
+function populateTrailPicker() {
+  const current = trailPicker.value;
+  trailPicker.innerHTML = `<option value="">Freehand (no saved route)</option>` +
+    wishlist.filter((w) => w.geometry).map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join("");
+  if (wishlist.some((w) => w.id === current)) trailPicker.value = current;
+}
+
+function selectTrailToFollow(id) {
+  const map = ensureTrackMap();
+  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+  followedTrail = wishlist.find((w) => w.id === id) || null;
+
+  if (followedTrail && followedTrail.geometry) {
+    const bounds = [];
+    const group = L.layerGroup();
+    followedTrail.geometry.forEach((seg) => {
+      if (seg.length < 2) return;
+      L.polyline(seg, { color: "#E3B23C", weight: 4, dashArray: "2 10" }).addTo(group);
+      seg.forEach((pt) => bounds.push(pt));
+    });
+    routeLine = group.addTo(map);
+    if (bounds.length) map.fitBounds(bounds, { padding: [24, 24] });
+    trackState.textContent = tracking ? "Tracking" : `Following ${followedTrail.name}`;
+  } else {
+    trackState.textContent = tracking ? "Tracking" : "Ready when you are";
+    map.setView([39.5, -98.35], 4);
+  }
+}
+
+trailPicker.addEventListener("change", () => selectTrailToFollow(trailPicker.value));
+
+function updateLiveStats() {
+  statDistance.textContent = fmtDist(distance);
+  statTime.textContent = fmtTime(elapsed);
+  statCalories.textContent = String(caloriesFromKm(distance / 1000));
+}
 
 function startTracking() {
   distance = 0; elapsed = 0; path = []; lastPoint = null;
@@ -102,14 +161,18 @@ function startTracking() {
   gpsNote.classList.remove("show");
   trackBtn.classList.add("recording");
   trackBtnIcon.textContent = "■";
-  trackState.textContent = "Tracking";
-  trackHint.textContent = "Tap to stop and save";
+  trackState.textContent = followedTrail ? `Tracking ${followedTrail.name}` : "Tracking";
   timerDisplay.textContent = fmtTime(0);
   distanceDisplay.textContent = fmtDist(0);
+  updateLiveStats();
+
+  const map = ensureTrackMap();
+  if (walkedLine) walkedLine.setLatLngs([]);
 
   timerId = setInterval(() => {
     elapsed += 1;
     timerDisplay.textContent = fmtTime(elapsed);
+    updateLiveStats();
   }, 1000);
 
   if (navigator.geolocation) {
@@ -122,9 +185,17 @@ function startTracking() {
           if (d > 0.5) {
             distance += d;
             distanceDisplay.textContent = fmtDist(distance);
+            updateLiveStats();
           }
         }
         lastPoint = p;
+        walkedLine.addLatLng([p.lat, p.lng]);
+        if (!liveDot) {
+          liveDot = L.circleMarker([p.lat, p.lng], { radius: 7, color: "#8a2f22", fillColor: "#E3B23C", fillOpacity: 1, weight: 2 }).addTo(map);
+        } else {
+          liveDot.setLatLng([p.lat, p.lng]);
+        }
+        map.panTo([p.lat, p.lng]);
       },
       () => {
         gpsNote.textContent = "Location unavailable — you can still time the hike and log distance by hand.";
@@ -144,17 +215,16 @@ function stopTracking() {
   if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
   trackBtn.classList.remove("recording");
   trackBtnIcon.textContent = "▶";
-  trackState.textContent = "Ready when you are";
-  trackHint.textContent = "Tap to start tracking";
+  trackState.textContent = followedTrail ? `Following ${followedTrail.name}` : "Ready when you are";
   openSaveTrackModal();
 }
 
 function openSaveTrackModal() {
   openModal("Save this hike", `
     <p class="condensed" style="font-size:1.1rem;color:var(--pine);display:flex;gap:20px;margin-bottom:14px;">
-      <span>${fmtDist(distance)}</span><span>${fmtTime(elapsed)}</span>
+      <span>${fmtDist(distance)}</span><span>${fmtTime(elapsed)}</span><span>${caloriesFromKm(distance / 1000)} cal</span>
     </p>
-    <label class="field"><span class="label">Name</span><input id="trackName" placeholder="Ridge Trail loop" autofocus /></label>
+    <label class="field"><span class="label">Name</span><input id="trackName" placeholder="Ridge Trail loop" value="${followedTrail ? escapeHtml(followedTrail.name) : ""}" autofocus /></label>
     <label class="field"><span class="label">Notes</span><textarea id="trackNotes" rows="3" placeholder="Muddy near the summit, worth it for the view"></textarea></label>
     <div class="modal-actions">
       <button id="discardTrackBtn" class="pill-btn outline">Discard</button>
@@ -163,6 +233,9 @@ function openSaveTrackModal() {
   `);
   document.getElementById("discardTrackBtn").addEventListener("click", () => {
     distance = 0; elapsed = 0; path = [];
+    updateLiveStats();
+    timerDisplay.textContent = fmtTime(0);
+    distanceDisplay.textContent = fmtDist(0);
     closeModal();
   });
   document.getElementById("saveTrackBtn").addEventListener("click", () => {
@@ -171,6 +244,9 @@ function openSaveTrackModal() {
     hikes = [{ id: uid(), date: new Date().toISOString(), name, distance, duration: elapsed, notes, path, source: "tracked" }, ...hikes];
     saveHikes(hikes);
     distance = 0; elapsed = 0; path = [];
+    updateLiveStats();
+    timerDisplay.textContent = fmtTime(0);
+    distanceDisplay.textContent = fmtDist(0);
     closeModal();
     showToast("Hike saved to your journal");
     updateStatLine();
@@ -246,6 +322,17 @@ document.getElementById("addHikeBtn").addEventListener("click", () => {
 let currentView = "search";
 let currentDifficulty = "All";
 let lastResults = [];
+let searchMode = "name";
+
+document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#searchModeToggle .seg").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    searchMode = btn.dataset.mode;
+    const input = document.getElementById("query");
+    input.placeholder = searchMode === "city" ? "Search a city (e.g. Boulder)" : "Search trail name (optional)";
+  });
+});
 
 document.querySelectorAll(".seg").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -287,6 +374,7 @@ function renderSearchResults(trails) {
         ${t.surface ? `<span class="badge">${escapeHtml(t.surface)}</span>` : ""}
       </div>
       <div class="card-actions">
+        <button class="pill-btn outline" data-map-idx="${i}">Map</button>
         <button class="pill-btn outline" data-save-idx="${i}">Save</button>
         <button class="pill-btn pine" data-log-idx="${i}">Log as hiked</button>
       </div>
@@ -294,6 +382,9 @@ function renderSearchResults(trails) {
     </div>
   `).join("");
 
+  el.querySelectorAll("[data-map-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => openTrailMapModal(filtered[Number(btn.dataset.mapIdx)]));
+  });
   el.querySelectorAll("[data-save-idx]").forEach((btn) => {
     btn.addEventListener("click", () => saveToWishlist(filtered[Number(btn.dataset.saveIdx)]));
   });
@@ -302,18 +393,51 @@ function renderSearchResults(trails) {
   });
 }
 
+function openTrailMapModal(trail) {
+  const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
+  openModal(trail.name, hasGeometry
+    ? `<div class="modal-map" id="trailModalMap"></div><p class="fine-print">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
+    : `<p class="empty">No mapped path is available for this trail yet.</p>`);
+  if (!hasGeometry) return;
+
+  setTimeout(() => {
+    const map = L.map("trailModalMap", { attributionControl: false });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    const bounds = [];
+    trail.geometry.forEach((seg) => {
+      if (seg.length < 2) return;
+      L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+      seg.forEach((pt) => bounds.push(pt));
+    });
+    if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
+    else map.setView([trail.lat, trail.lon], 12);
+  }, 0);
+}
+
 async function runSearch() {
   const state = document.getElementById("state").value;
   const q = document.getElementById("query").value.trim();
   const status = document.getElementById("status");
   const searchBtn = document.getElementById("searchBtn");
-  status.textContent = `Searching live OpenStreetMap data for ${state}…`;
+
+  if (searchMode === "city" && !q) {
+    status.textContent = "Enter a city name to search near.";
+    return;
+  }
+
+  status.textContent = searchMode === "city"
+    ? `Finding trails near ${q}, ${state}…`
+    : `Searching live OpenStreetMap data for ${state}…`;
   document.getElementById("results").innerHTML = "";
   searchBtn.disabled = true;
 
   try {
     const params = new URLSearchParams({ state });
-    if (q) params.set("q", q);
+    if (searchMode === "city") {
+      params.set("near", q);
+    } else if (q) {
+      params.set("q", q);
+    }
     const res = await fetch(`/api/trails?${params.toString()}`);
     const data = await res.json();
     if (!res.ok) {
@@ -321,7 +445,8 @@ async function runSearch() {
       return;
     }
     lastResults = data.trails;
-    status.textContent = `${data.trails.length} named trail${data.trails.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}. Distances are approximate, computed from mapped geometry.`;
+    const locationLabel = searchMode === "city" ? `near ${q}` : `in ${state}`;
+    status.textContent = `${data.trails.length} named trail${data.trails.length !== 1 ? "s" : ""} found ${locationLabel}${data.cached ? " (cached)" : ""}. Distances are approximate, computed from mapped geometry.`;
     renderSearchResults(lastResults);
   } catch (err) {
     status.textContent = "Couldn't reach the server. Is it running?";
@@ -345,9 +470,19 @@ document.querySelectorAll("#difficultyFilters .chip").forEach((chip) => {
 // ---- saved / wishlist ----
 function saveToWishlist(trail) {
   if (wishlist.some((w) => w.name === trail.name)) { showToast("Already on your list"); return; }
-  wishlist = [{ id: uid(), name: trail.name, location: trail.state, notes: `${trail.distance_km.toFixed(1)} km · ${trail.difficulty}`, osm_url: trail.osm_url }, ...wishlist];
+  wishlist = [{
+    id: uid(),
+    name: trail.name,
+    location: trail.state,
+    notes: `${trail.distance_km.toFixed(1)} km · ${trail.difficulty}`,
+    osm_url: trail.osm_url,
+    geometry: trail.geometry || null,
+    lat: trail.lat,
+    lon: trail.lon,
+  }, ...wishlist];
   saveWishlist(wishlist);
   showToast("Saved to your list");
+  populateTrailPicker();
 }
 
 function renderSaved() {
@@ -363,6 +498,7 @@ function renderSaved() {
       <p class="state">${escapeHtml(w.location || "")}</p>
       ${w.notes ? `<p class="notes">${escapeHtml(w.notes)}</p>` : ""}
       <div class="card-actions">
+        ${w.geometry ? `<button class="pill-btn outline" data-track-wish="${w.id}">Track this</button>` : ""}
         <button class="pill-btn pine" data-complete-wish="${w.id}">Mark as hiked</button>
         ${w.osm_url ? `<a class="map-link" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
       </div>
@@ -374,12 +510,20 @@ function renderSaved() {
       wishlist = wishlist.filter((w) => w.id !== btn.dataset.deleteWish);
       saveWishlist(wishlist);
       renderSaved();
+      populateTrailPicker();
     });
   });
   el.querySelectorAll("[data-complete-wish]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const trail = wishlist.find((w) => w.id === btn.dataset.completeWish);
       openCompleteModal({ name: trail.name, state: trail.location, notes: trail.notes, wishId: trail.id });
+    });
+  });
+  el.querySelectorAll("[data-track-wish]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchTab("track");
+      document.getElementById("trailPicker").value = btn.dataset.trackWish;
+      selectTrailToFollow(btn.dataset.trackWish);
     });
   });
 }
@@ -426,3 +570,5 @@ window.addEventListener("beforeunload", () => {
 updateStatLine();
 renderJournal();
 loadStates();
+populateTrailPicker();
+switchTab("discover");
