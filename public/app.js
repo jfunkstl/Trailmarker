@@ -49,7 +49,7 @@ function updateStatLine() {
 }
 
 // ---------- tab switching ----------
-const tabs = ["discover", "track", "journal"];
+const tabs = ["discover", "create", "track", "journal"];
 function switchTab(tab) {
   tabs.forEach((t) => {
     document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
@@ -58,6 +58,7 @@ function switchTab(tab) {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
+  if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -120,7 +121,7 @@ function ensureTrackMap() {
 
 function populateTrailPicker() {
   const current = trailPicker.value;
-  trailPicker.innerHTML = `<option value="">Freehand (no saved route)</option>` +
+  trailPicker.innerHTML = `<option value="">Freestyle (no saved route)</option>` +
     wishlist.filter((w) => w.geometry).map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join("");
   if (wishlist.some((w) => w.id === current)) trailPicker.value = current;
 }
@@ -261,6 +262,118 @@ function openSaveTrackModal() {
 }
 
 trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTracking()));
+
+// ================= CREATE =================
+let createMap = null;
+let createPolyline = null;
+let createPoints = []; // array of [lat, lon]
+let createBaseName = null; // name of the saved trail this route started from, if any
+
+function ensureCreateMap() {
+  if (createMap) return createMap;
+  createMap = L.map("createMap").setView([39.5, -98.35], 4);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
+  createPolyline = L.polyline([], { color: "#1B4332", weight: 5 }).addTo(createMap);
+  createMap.on("click", (e) => {
+    createPoints.push([e.latlng.lat, e.latlng.lng]);
+    redrawCreateRoute();
+  });
+  return createMap;
+}
+
+function redrawCreateRoute() {
+  createPolyline.setLatLngs(createPoints);
+  document.getElementById("createPointCount").textContent = String(createPoints.length);
+  let km = 0;
+  for (let i = 1; i < createPoints.length; i++) {
+    km += haversineKm(createPoints[i - 1][0], createPoints[i - 1][1], createPoints[i][0], createPoints[i][1]);
+  }
+  document.getElementById("createDistance").textContent = fmtDist(km * 1000);
+}
+
+function populateCreateBasePicker() {
+  const current = document.getElementById("createBasePicker").value;
+  const picker = document.getElementById("createBasePicker");
+  picker.innerHTML = `<option value="">Freestyle (blank map)</option>` +
+    wishlist.filter((w) => w.geometry).map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`).join("");
+  if (wishlist.some((w) => w.id === current)) picker.value = current;
+}
+
+document.getElementById("createBasePicker").addEventListener("change", (e) => {
+  const map = ensureCreateMap();
+  const id = e.target.value;
+  if (!id) {
+    createPoints = [];
+    createBaseName = null;
+    redrawCreateRoute();
+    map.setView([39.5, -98.35], 4);
+    document.getElementById("createHint").textContent = "Tap the map to add points to your route.";
+    return;
+  }
+  const base = wishlist.find((w) => w.id === id);
+  if (!base || !base.geometry) return;
+  createBaseName = base.name;
+  createPoints = [];
+  base.geometry.forEach((seg) => seg.forEach((pt) => createPoints.push(pt)));
+  redrawCreateRoute();
+  const bounds = createPoints.length ? createPoints : null;
+  setTimeout(() => {
+    map.invalidateSize();
+    if (bounds) map.fitBounds(bounds, { padding: [24, 24] });
+  }, 60);
+  document.getElementById("createHint").textContent = `Starting from ${base.name} — tap the map to extend the route.`;
+});
+
+document.getElementById("createUndoBtn").addEventListener("click", () => {
+  createPoints.pop();
+  redrawCreateRoute();
+});
+
+document.getElementById("createClearBtn").addEventListener("click", () => {
+  createPoints = [];
+  createBaseName = null;
+  document.getElementById("createBasePicker").value = "";
+  document.getElementById("createHint").textContent = "Tap the map to add points to your route.";
+  redrawCreateRoute();
+});
+
+document.getElementById("createSaveBtn").addEventListener("click", () => {
+  if (createPoints.length < 2) {
+    showToast("Add at least two points first");
+    return;
+  }
+  let km = 0;
+  for (let i = 1; i < createPoints.length; i++) {
+    km += haversineKm(createPoints[i - 1][0], createPoints[i - 1][1], createPoints[i][0], createPoints[i][1]);
+  }
+  openModal("Save your route", `
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" value="${createBaseName ? escapeHtml(createBaseName) + " (custom)" : ""}" autofocus /></label>
+    <p class="text-sm opacity-70 mb-3">${km.toFixed(1)} km · ${createPoints.length} points</p>
+    <div class="flex gap-2 mt-4">
+      <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
+      <button id="createConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
+    </div>
+  `);
+  document.getElementById("createCancelBtn").addEventListener("click", closeModal);
+  document.getElementById("createConfirmBtn").addEventListener("click", () => {
+    const name = document.getElementById("createName").value.trim() || "Untitled route";
+    wishlist = [{
+      id: uid(),
+      name,
+      location: "Custom route",
+      notes: `${km.toFixed(1)} km · custom drawn route`,
+      osm_url: null,
+      geometry: [createPoints],
+      lat: createPoints[0][0],
+      lon: createPoints[0][1],
+    }, ...wishlist];
+    saveWishlist(wishlist);
+    populateTrailPicker();
+    populateCreateBasePicker();
+    closeModal();
+    showToast("Route saved — find it in Track or your Saved list");
+  });
+});
 
 // ================= JOURNAL =================
 function renderJournal() {
@@ -451,6 +564,7 @@ function openParkDetail(park) {
   document.getElementById("detailBody").innerHTML = `
     <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(park.state)}</p>
     <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(park.kind)}</span></div>
+    <div id="parkAlerts"></div>
     <p class="leading-relaxed my-3" id="trailDescriptionText">Location is mapped from OpenStreetMap's park boundary data. Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.</p>
     <div class="my-3.5">
       <div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div>
@@ -465,7 +579,11 @@ function openParkDetail(park) {
     saveToWishlist({ name: park.name, state: park.state, distance_km: 0, difficulty: park.kind, geometry: null, lat: park.lat, lon: park.lon, osm_url: park.osm_url })
   );
   document.getElementById("trailDetailOverlay").classList.remove("hidden");
-  loadRichDescription(park, " Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.");
+  if (park.kind === "National Park") {
+    loadNpsInfo(park);
+  } else {
+    loadRichDescription(park, " Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.");
+  }
   setTimeout(() => {
     const map = L.map("detailMiniMap", {
       attributionControl: false, zoomControl: false, dragging: false,
@@ -475,6 +593,30 @@ function openParkDetail(park) {
     L.marker([park.lat, park.lon]).addTo(map);
     document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openParkMapModal(park));
   }, 0);
+}
+
+async function loadNpsInfo(park) {
+  try {
+    const resp = await fetch(`/api/park-info?name=${encodeURIComponent(park.name)}`);
+    const data = await resp.json();
+    if (data.available) {
+      document.getElementById("trailDescriptionText").innerHTML =
+        `${escapeHtml(data.description)} <a href="${data.url}" target="_blank" rel="noopener">Official NPS page →</a>`;
+      if (data.alerts && data.alerts.length) {
+        document.getElementById("parkAlerts").innerHTML = data.alerts.map((a) => `
+          <div class="bg-[#F3DCC4] text-[#8a5a10] rounded-xl px-3 py-2 text-sm mb-2">
+            <strong>${escapeHtml(a.title)}</strong>
+            <p class="text-xs mt-0.5">${escapeHtml(a.description)}</p>
+          </div>
+        `).join("");
+      }
+      return;
+    }
+  } catch (err) {
+    console.error("NPS info lookup failed:", err);
+  }
+  // NPS key not configured, or no match — fall back to Wikipedia/OSM as before.
+  loadRichDescription(park, " Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.");
 }
 
 function openTrailMapModal(trail) {
@@ -757,6 +899,7 @@ function saveToWishlist(trail) {
   saveWishlist(wishlist);
   showToast("Saved to your list");
   populateTrailPicker();
+  populateCreateBasePicker();
 }
 
 function renderSaved() {
@@ -795,6 +938,7 @@ function renderSaved() {
       saveWishlist(wishlist);
       renderSaved();
       populateTrailPicker();
+      populateCreateBasePicker();
     });
   });
   el.querySelectorAll("[data-complete-wish]").forEach((btn) => {
@@ -855,4 +999,5 @@ updateStatLine();
 renderJournal();
 loadStates();
 populateTrailPicker();
+populateCreateBasePicker();
 switchTab("discover");
