@@ -7,151 +7,175 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            paper: '#F2E9DC',
+            card: '#FBF6EC',
+            ink: '#2B2E4A',
+            pine: '#1B4332',
+            mustard: '#E3B23C',
+            clay: '#8a2f22',
+            line: '#D9C9AC',
+            chipbg: '#E7DBC3',
+          },
+          fontFamily: {
+            display: ['"Abril Fatface"', 'serif'],
+            condensed: ['"Barlow Condensed"', 'sans-serif'],
+            sans: ['Barlow', 'sans-serif'],
+          },
+        },
+      },
+    };
+  </script>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
-  <header class="hero">
-    <svg class="hero-scene" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
-      <polygon points="0,140 0,70 60,20 120,80 170,35 230,90 280,45 340,85 400,55 400,140" class="peak peak-back"/>
-      <polygon points="0,140 0,95 70,50 140,105 210,60 280,110 340,75 400,100 400,140" class="peak peak-front"/>
-      <g class="pines">
+<body class="bg-paper text-ink font-sans relative pb-6">
+
+  <header class="relative overflow-hidden rounded-b-[28px] px-4 pt-9 pb-7 text-center bg-gradient-to-b from-[#2B2E4A] via-[#7A5570] via-45% to-[#E3B23C]">
+    <svg class="absolute inset-0 w-full h-full" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
+      <polygon points="0,140 0,70 60,20 120,80 170,35 230,90 280,45 340,85 400,55 400,140" fill="#6b5a7a" opacity="0.85"/>
+      <polygon points="0,140 0,95 70,50 140,105 210,60 280,110 340,75 400,100 400,140" fill="#16342a"/>
+      <g fill="#0f2a1f">
         <path d="M30,140 L38,120 L32,120 L40,102 L34,102 L42,86 L50,102 L44,102 L52,120 L46,120 L54,140 Z"/>
         <path d="M355,140 L363,116 L357,116 L365,96 L359,96 L367,78 L375,96 L369,96 L377,116 L371,116 L379,140 Z"/>
         <path d="M370,140 L376,124 L372,124 L378,110 L374,110 L380,98 L386,110 L382,110 L388,124 L384,124 L390,140 Z"/>
       </g>
-      <circle cx="335" cy="30" r="16" class="sun"/>
+      <circle cx="335" cy="30" r="16" fill="#E3B23C" opacity="0.55"/>
     </svg>
-    <h1 class="poster-title">TRAILSEEKER</h1>
-    <p class="condensed subtitle">Seek your next adventure</p>
+    <h1 class="relative z-10 font-display text-4xl text-[#FBF6EC]" style="text-shadow:0 2px 10px rgba(0,0,0,0.35)">TRAILSEEKER</h1>
+    <p class="relative z-10 font-condensed uppercase tracking-[0.25em] text-xs text-[#F2E9DC] mt-1.5">Seek your next adventure</p>
   </header>
 
-  <main>
-    <p class="stat-line" id="statLine"></p>
+  <nav class="sticky top-0 z-10 flex max-w-xl mx-auto bg-paper border-b border-line">
+    <button class="nav-btn active flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="discover">
+      <span class="text-lg">🔎</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Discover</span>
+    </button>
+    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="track">
+      <span class="text-lg">🧭</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Track</span>
+    </button>
+    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="journal">
+      <span class="text-lg">📓</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Journal</span>
+    </button>
+  </nav>
+
+  <main class="relative z-[1] max-w-xl mx-auto px-4 pt-4 pb-10">
+    <p class="font-condensed text-xs uppercase tracking-wide opacity-60 text-center mb-3" id="statLine"></p>
 
     <!-- DISCOVER -->
-    <section id="tab-discover" class="tab-panel">
-      <div class="section-head">
-        <h2 class="poster-title">Discover</h2>
-        <div class="segmented" id="viewToggle">
-          <button class="seg active" data-view="search">Search</button>
-          <button class="seg" data-view="saved">Saved</button>
+    <section id="tab-discover">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-display text-2xl">Discover</h2>
+        <div class="flex bg-chipbg rounded-full p-0.5" id="viewToggle">
+          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="search">Search</button>
+          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="saved">Saved</button>
         </div>
       </div>
 
       <div id="discoverSearch">
-        <div class="segmented small" id="searchModeToggle">
-          <button class="seg active" data-mode="name">Trail name</button>
-          <button class="seg" data-mode="city">City</button>
+        <div class="segmented-small flex w-fit bg-chipbg rounded-full p-0.5 mb-2.5" id="searchModeToggle">
+          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="name">Trail name</button>
+          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="city">City</button>
+          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="parks">Parks</button>
         </div>
-        <div class="search-row">
-          <input id="query" type="text" placeholder="Search trail name (optional)" />
-          <select id="state"></select>
-          <button id="searchBtn" class="pill-btn pine">Search</button>
+        <div class="flex gap-2 mb-3">
+          <input id="query" type="text" placeholder="Search trail name (optional)" class="flex-1 min-w-0 rounded-full border border-line bg-card px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40" />
+          <select id="state" class="rounded-full border border-line bg-card px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40"></select>
         </div>
-        <div class="filters" id="difficultyFilters">
-          <button class="chip active" data-difficulty="All">All</button>
-          <button class="chip" data-difficulty="Easy">Easy</button>
-          <button class="chip" data-difficulty="Moderate">Moderate</button>
-          <button class="chip" data-difficulty="Strenuous">Strenuous</button>
-          <button class="chip" data-difficulty="Unknown">Unrated</button>
+        <button id="searchBtn" class="w-full rounded-full bg-pine text-white font-condensed font-semibold uppercase tracking-wide py-2.5 mb-3 hover:opacity-90 active:scale-[0.98] transition disabled:opacity-50">Search</button>
+        <div class="flex flex-wrap gap-2 mb-3" id="difficultyFilters">
+          <button class="chip active px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="All">All</button>
+          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Easy">Easy</button>
+          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Moderate">Moderate</button>
+          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Strenuous">Strenuous</button>
+          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Unknown">Unrated</button>
         </div>
-        <p id="status" class="status">Pick a state and search to load live trail data.</p>
-        <div id="results" class="results"></div>
+        <p id="status" class="text-sm opacity-70 mb-3">Pick a state and search to load live trail data.</p>
+        <div id="results" class="flex flex-col gap-3"></div>
       </div>
 
       <div id="discoverSaved" class="hidden">
-        <div id="savedList" class="results"></div>
+        <div id="savedList" class="flex flex-col gap-3"></div>
       </div>
     </section>
 
     <!-- TRACK -->
-    <section id="tab-track" class="tab-panel hidden">
-      <div class="section-head">
-        <h2 class="poster-title">Track</h2>
-      </div>
+    <section id="tab-track" class="hidden">
+      <h2 class="font-display text-2xl mb-4">Track</h2>
 
-      <label class="field trail-picker">
-        <span class="label">Following</span>
-        <select id="trailPicker">
+      <label class="block mb-3">
+        <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Following</span>
+        <select id="trailPicker" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2.5 text-sm">
           <option value="">Freehand (no saved route)</option>
         </select>
       </label>
 
-      <div class="track-card">
-        <button id="trackBtn" class="record-btn" aria-label="Start tracking">
+      <div class="flex items-center gap-4 bg-card border border-line rounded-[20px] px-4 py-3.5">
+        <button id="trackBtn" class="record-btn shrink-0 w-[60px] h-[60px] rounded-full bg-mustard text-white text-xl shadow-lg active:scale-95 transition" aria-label="Start tracking">
           <span id="trackBtnIcon">▶</span>
         </button>
-        <div class="track-readout">
-          <p class="condensed eyebrow" id="trackState">Ready when you are</p>
-          <div class="track-readout-row">
-            <span class="condensed timer" id="timerDisplay">0:00</span>
-            <span class="condensed distance" id="distanceDisplay">0 m</span>
+        <div class="flex-1 text-left">
+          <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1" id="trackState">Ready when you are</p>
+          <div class="flex items-baseline gap-3.5">
+            <span class="font-condensed text-3xl font-semibold" id="timerDisplay">0:00</span>
+            <span class="font-condensed text-lg text-pine" id="distanceDisplay">0 m</span>
           </div>
         </div>
       </div>
-      <p class="gps-note" id="gpsNote"></p>
+      <p class="gps-note hidden text-sm bg-[#F3DCC4] text-[#8a5a10] rounded-lg px-3 py-2 mt-2.5" id="gpsNote"></p>
 
-      <div id="trackMapWrap" class="map-wrap">
-        <div id="trackMap" class="leaflet-map tall"></div>
+      <div class="rounded-2xl overflow-hidden border border-line mt-4" id="trackMapWrap">
+        <div id="trackMap" class="w-full h-[320px] bg-card"></div>
       </div>
 
-      <div class="stats-strip">
-        <div class="stat-box">
-          <span class="stat-value" id="statDistance">0 m</span>
-          <span class="condensed stat-label">Distance</span>
+      <div class="flex gap-2.5 mt-3.5">
+        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
+          <span class="block font-condensed font-bold text-xl text-pine" id="statDistance">0 m</span>
+          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Distance</span>
         </div>
-        <div class="stat-box">
-          <span class="stat-value" id="statTime">0:00</span>
-          <span class="condensed stat-label">Time</span>
+        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
+          <span class="block font-condensed font-bold text-xl text-pine" id="statTime">0:00</span>
+          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Time</span>
         </div>
-        <div class="stat-box">
-          <span class="stat-value" id="statCalories">0</span>
-          <span class="condensed stat-label">Calories (approx.)</span>
+        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
+          <span class="block font-condensed font-bold text-xl text-pine" id="statCalories">0</span>
+          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Calories (approx.)</span>
         </div>
       </div>
-      <p class="fine-print">Uses your device's location to trace the route and measure distance as you walk. Calorie estimate is a general approximation, not personalized.</p>
+      <p class="text-xs opacity-60 mt-3">Uses your device's location to trace the route and measure distance as you walk. Calorie estimate is a general approximation, not personalized.</p>
     </section>
 
     <!-- JOURNAL -->
-    <section id="tab-journal" class="tab-panel hidden">
-      <div class="section-head">
-        <h2 class="poster-title">Journal</h2>
-        <button id="addHikeBtn" class="pill-btn pine">+ Add</button>
+    <section id="tab-journal" class="hidden">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-display text-2xl">Journal</h2>
+        <button id="addHikeBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90">+ Add</button>
       </div>
-      <div id="journalList" class="results"></div>
+      <div id="journalList" class="flex flex-col gap-3"></div>
     </section>
   </main>
 
-  <nav class="bottom-nav">
-    <button class="nav-btn active" data-tab="discover">
-      <span class="nav-icon">🔎</span><span class="condensed nav-label">Discover</span>
-    </button>
-    <button class="nav-btn" data-tab="track">
-      <span class="nav-icon">🧭</span><span class="condensed nav-label">Track</span>
-    </button>
-    <button class="nav-btn" data-tab="journal">
-      <span class="nav-icon">📓</span><span class="condensed nav-label">Journal</span>
-    </button>
-  </nav>
-
-  <div id="modalOverlay" class="modal-overlay hidden">
-    <div class="modal">
-      <div class="modal-head">
-        <h3 class="poster-title" id="modalTitle">Save this hike</h3>
-        <button id="modalClose" class="icon-btn">✕</button>
+  <div id="modalOverlay" class="hidden fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
+    <div class="bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-display text-xl" id="modalTitle">Save this hike</h3>
+        <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
       </div>
       <div id="modalBody"></div>
     </div>
   </div>
 
-  <div id="toast" class="toast hidden"></div>
+  <div id="toast" class="hidden fixed bottom-8 left-1/2 -translate-x-1/2 bg-ink text-white px-4.5 py-2 rounded-full text-sm font-condensed tracking-wide z-[60]"></div>
 
-  <div id="trailDetailOverlay" class="detail-overlay hidden">
-    <div class="detail-head">
-      <button id="detailBack" class="icon-btn">←</button>
-      <h2 class="poster-title" id="detailTitle">Trail</h2>
+  <div id="trailDetailOverlay" class="hidden fixed inset-0 z-[100] bg-paper overflow-y-auto pb-10">
+    <div class="flex items-center gap-2.5 px-4 py-4 border-b border-line bg-paper sticky top-0 z-10">
+      <button id="detailBack" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">←</button>
+      <h2 class="font-display text-xl" id="detailTitle">Trail</h2>
     </div>
-    <div id="detailBody" class="detail-body"></div>
+    <div id="detailBody" class="p-4 max-w-xl mx-auto"></div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
