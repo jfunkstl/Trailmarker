@@ -205,6 +205,7 @@ app.get("/api/trails", async (req, res) => {
           lat: t.lat,
           lon: t.lon,
           geometry,
+          osm_description: t.tags.description || null,
           osm_url: `https://www.openstreetmap.org/?mlat=${t.lat}&mlon=${t.lon}#map=15/${t.lat}/${t.lon}`,
         };
       })
@@ -217,6 +218,134 @@ app.get("/api/trails", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch trail data", detail: String(err.message || err) });
   }
+});
+
+// Classifies a park by whichever OSM tags matched it — national parks and
+// protected/state-level areas use `boundary`, while most city/local parks
+// use `leisure=park`.
+function parkKind(tags) {
+  if (tags.boundary === "national_park" || tags.protection_title === "National Park") return "National Park";
+  if (tags.boundary === "protected_area" || tags.leisure === "nature_reserve") return "State / Protected Park";
+  if (tags.leisure === "park") return "City / Local Park";
+  return "Park";
+}
+
+app.get("/api/parks", async (req, res) => {
+  const stateInput = (req.query.state || "").trim();
+  const q = (req.query.q || "").trim();
+  const iso = STATE_ISO[stateInput] || STATE_ISO[stateInput.toLowerCase()];
+
+  if (!iso) {
+    return res.status(400).json({ error: "Unknown or missing state. Send a full state name (California) or two-letter code (CA)." });
+  }
+
+  const cacheKey = `parks::${iso}::${q.toLowerCase()}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ parks: cached.data, cached: true });
+  }
+
+  const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
+  const overpassQuery = `
+    [out:json][timeout:25];
+    area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+    (
+      way["leisure"="park"]${nameFilter}(area.a);
+      relation["leisure"="park"]${nameFilter}(area.a);
+      way["leisure"="nature_reserve"]${nameFilter}(area.a);
+      relation["leisure"="nature_reserve"]${nameFilter}(area.a);
+      way["boundary"="national_park"]${nameFilter}(area.a);
+      relation["boundary"="national_park"]${nameFilter}(area.a);
+      way["boundary"="protected_area"]${nameFilter}(area.a);
+      relation["boundary"="protected_area"]${nameFilter}(area.a);
+    );
+    out tags center;
+  `.trim();
+
+  try {
+    let data = null;
+    let lastError = null;
+    for (const url of OVERPASS_URLS) {
+      try {
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
+            "Accept": "application/json, text/plain, */*",
+          },
+          body: overpassQuery,
+        });
+        if (!resp.ok) { lastError = await resp.text(); continue; }
+        data = await resp.json();
+        break;
+      } catch (innerErr) {
+        lastError = String(innerErr.message || innerErr);
+        continue;
+      }
+    }
+    if (!data) {
+      return res.status(502).json({ error: "All Overpass mirrors are busy right now — please try again in a minute.", detail: (lastError || "").slice(0, 500) });
+    }
+
+    const seen = new Map();
+    (data.elements || []).forEach((el) => {
+      const name = el.tags && el.tags.name;
+      const center = el.center;
+      if (!name || !center) return;
+      if (seen.has(name)) return; // same park often returned as both way + relation
+      seen.set(name, {
+        name,
+        state: stateInput,
+        kind: parkKind(el.tags),
+        lat: center.lat,
+        lon: center.lon,
+        osm_description: el.tags.description || null,
+        osm_url: `https://www.openstreetmap.org/?mlat=${center.lat}&mlon=${center.lon}#map=13/${center.lat}/${center.lon}`,
+      });
+    });
+
+    const parks = Array.from(seen.values()).slice(0, 150);
+    cache.set(cacheKey, { data: parks, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ parks, cached: false, source: "OpenStreetMap (Overpass API)" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch park data", detail: String(err.message || err) });
+  }
+});
+// flaky/CORS-restricted for direct browser calls. Tries Open-Topo-Data first
+// (more reliable), falls back to Open-Elevation if that fails.
+app.get("/api/elevation", async (req, res) => {
+  const locations = (req.query.locations || "").trim(); // "lat,lon|lat,lon|..."
+  if (!locations) return res.status(400).json({ error: "Missing locations" });
+
+  try {
+    const otdResp = await fetch(`https://api.opentopodata.org/v1/srtm90m?locations=${locations}`, {
+      headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" },
+    });
+    if (otdResp.ok) {
+      const otdData = await otdResp.json();
+      if (otdData.results && otdData.results.every((r) => r.elevation !== null)) {
+        return res.json({ elevations: otdData.results.map((r) => r.elevation), source: "opentopodata" });
+      }
+    }
+  } catch (err) {
+    console.error("Open-Topo-Data failed:", err.message || err);
+  }
+
+  try {
+    const oeResp = await fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${locations}`, {
+      headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" },
+    });
+    if (oeResp.ok) {
+      const oeData = await oeResp.json();
+      return res.json({ elevations: oeData.results.map((r) => r.elevation), source: "open-elevation" });
+    }
+  } catch (err) {
+    console.error("Open-Elevation failed:", err.message || err);
+  }
+
+  res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
 });
 
 app.use(express.static(path.join(__dirname, "public")));
