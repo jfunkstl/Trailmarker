@@ -465,3 +465,40 @@ textarea {
   margin-bottom: 12px;
 }
 .map-btn-row { margin-top: 6px; }
+
+/* ---- trail detail page ---- */
+.trail-name-link { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.detail-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--paper);
+  z-index: 100;
+  overflow-y: auto;
+  padding-bottom: 40px;
+}
+.detail-overlay.hidden { display: none; }
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.detail-head .poster-title { font-size: 1.3rem; margin: 0; }
+.detail-body { padding: 16px; max-width: 640px; margin: 0 auto; }
+.detail-body .description { line-height: 1.5; margin: 12px 0; }
+.mini-map-box { margin: 14px 0; cursor: pointer; }
+.leaflet-map.mini { height: 160px; border-radius: 14px; overflow: hidden; pointer-events: none; }
+.fine-print.center { text-align: center; margin-top: 4px; }
+.elevation-box {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  margin-top: 14px;
+}
+.elevation-box .eyebrow { text-transform: uppercase; letter-spacing: 0.15em; font-size: 0.7rem; opacity: 0.6; margin: 0 0 8px; }
