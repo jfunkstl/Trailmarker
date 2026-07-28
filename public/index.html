@@ -32,7 +32,7 @@
     <section id="tab-discover" class="tab-panel">
       <div class="section-head">
         <h2 class="poster-title">Discover</h2>
-        <div class="segmented">
+        <div class="segmented" id="viewToggle">
           <button class="seg active" data-view="search">Search</button>
           <button class="seg" data-view="saved">Saved</button>
         </div>
@@ -146,7 +146,16 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <div id="trailDetailOverlay" class="detail-overlay hidden">
+    <div class="detail-head">
+      <button id="detailBack" class="icon-btn">←</button>
+      <h2 class="poster-title" id="detailTitle">Trail</h2>
+    </div>
+    <div id="detailBody" class="detail-body"></div>
+  </div>
+
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
