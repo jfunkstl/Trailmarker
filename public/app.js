@@ -126,25 +126,30 @@ function populateTrailPicker() {
 }
 
 function selectTrailToFollow(id) {
-  const map = ensureTrackMap();
-  if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
   followedTrail = wishlist.find((w) => w.id === id) || null;
+  // Deferred so this always runs after the tab's own layout/map-init settles,
+  // whether we got here by switching tabs or just changing the dropdown.
+  setTimeout(() => {
+    const map = ensureTrackMap();
+    map.invalidateSize();
+    if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
 
-  if (followedTrail && followedTrail.geometry) {
-    const bounds = [];
-    const group = L.layerGroup();
-    followedTrail.geometry.forEach((seg) => {
-      if (seg.length < 2) return;
-      L.polyline(seg, { color: "#E3B23C", weight: 4, dashArray: "2 10" }).addTo(group);
-      seg.forEach((pt) => bounds.push(pt));
-    });
-    routeLine = group.addTo(map);
-    if (bounds.length) map.fitBounds(bounds, { padding: [24, 24] });
-    trackState.textContent = tracking ? "Tracking" : `Following ${followedTrail.name}`;
-  } else {
-    trackState.textContent = tracking ? "Tracking" : "Ready when you are";
-    map.setView([39.5, -98.35], 4);
-  }
+    if (followedTrail && followedTrail.geometry) {
+      const bounds = [];
+      const group = L.layerGroup();
+      followedTrail.geometry.forEach((seg) => {
+        if (seg.length < 2) return;
+        L.polyline(seg, { color: "#E3B23C", weight: 4, dashArray: "2 10" }).addTo(group);
+        seg.forEach((pt) => bounds.push(pt));
+      });
+      routeLine = group.addTo(map);
+      if (bounds.length) map.fitBounds(bounds, { padding: [24, 24] });
+      trackState.textContent = tracking ? "Tracking" : `Following ${followedTrail.name}`;
+    } else {
+      trackState.textContent = tracking ? "Tracking" : "Ready when you are";
+      map.setView([39.5, -98.35], 4);
+    }
+  }, 60);
 }
 
 trailPicker.addEventListener("change", () => selectTrailToFollow(trailPicker.value));
@@ -334,9 +339,9 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
   });
 });
 
-document.querySelectorAll(".seg").forEach((btn) => {
+document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".seg").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("#viewToggle .seg").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     currentView = btn.dataset.view;
     document.getElementById("discoverSearch").classList.toggle("hidden", currentView !== "search");
@@ -367,7 +372,7 @@ function renderSearchResults(trails) {
   el.innerHTML = filtered.map((t, i) => `
     <div class="card">
       <p class="state">${escapeHtml(t.state)}${t.segments > 1 ? ` · ${t.segments} mapped segments` : ""}</p>
-      <h3>${escapeHtml(t.name)}</h3>
+      <h3 class="trail-name-link" data-detail-idx="${i}">${escapeHtml(t.name)}</h3>
       <div class="stats">
         <span>${t.distance_km.toFixed(1)} km</span>
         <span class="badge">${t.difficulty}</span>
@@ -382,6 +387,9 @@ function renderSearchResults(trails) {
     </div>
   `).join("");
 
+  el.querySelectorAll("[data-detail-idx]").forEach((el2) => {
+    el2.addEventListener("click", () => openTrailDetail(filtered[Number(el2.dataset.detailIdx)]));
+  });
   el.querySelectorAll("[data-map-idx]").forEach((btn) => {
     btn.addEventListener("click", () => openTrailMapModal(filtered[Number(btn.dataset.mapIdx)]));
   });
@@ -412,6 +420,148 @@ function openTrailMapModal(trail) {
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
     else map.setView([trail.lat, trail.lon], 12);
   }, 0);
+}
+
+function buildTrailDescription(trail) {
+  const parts = [];
+  if (trail.distance_km != null) {
+    let p = `This trail runs about ${trail.distance_km.toFixed(1)} km`;
+    if (trail.segments > 1) p += `, pieced together from ${trail.segments} mapped segments`;
+    parts.push(p + ".");
+  }
+  if (trail.difficulty && trail.difficulty !== "Unknown") {
+    parts.push(`OpenStreetMap tagging rates it as ${trail.difficulty.toLowerCase()} difficulty.`);
+  } else if (trail.difficulty === "Unknown") {
+    parts.push(`Difficulty isn't tagged in OpenStreetMap for this one — check trip reports before you go.`);
+  }
+  if (trail.surface) parts.push(`Surface is mapped as ${trail.surface}.`);
+  if (parts.length === 0) {
+    return "Details for this trail are limited in OpenStreetMap's data. Tap through to OpenStreetMap for more context, or check trip-report sites before heading out.";
+  }
+  return parts.join(" ") + " This description is generated from OpenStreetMap data, not a written guide — always check current conditions before you go.";
+}
+
+function openTrailDetail(trail) {
+  document.getElementById("detailTitle").textContent = trail.name;
+  const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
+
+  const factsHtml = trail.distance_km != null
+    ? `<div class="stats">
+        <span>${trail.distance_km.toFixed(1)} km</span>
+        <span class="badge">${trail.difficulty}</span>
+        ${trail.surface ? `<span class="badge">${escapeHtml(trail.surface)}</span>` : ""}
+      </div>`
+    : trail.savedNotes ? `<p class="notes">${escapeHtml(trail.savedNotes)}</p>` : "";
+
+  document.getElementById("detailBody").innerHTML = `
+    <p class="state">${escapeHtml(trail.state || "")}${trail.segments > 1 ? ` · ${trail.segments} mapped segments` : ""}</p>
+    ${factsHtml}
+    <p class="description">${buildTrailDescription(trail)}</p>
+    <div class="mini-map-box" id="detailMiniMapBox">
+      ${hasGeometry ? `<div class="leaflet-map mini" id="detailMiniMap"></div><p class="fine-print center">Tap map to expand</p>` : `<p class="empty">No mapped path available.</p>`}
+    </div>
+    <div class="elevation-box">
+      <p class="condensed eyebrow">Elevation profile</p>
+      <canvas id="elevationChart" height="140"></canvas>
+      <p class="fine-print" id="elevationNote">Loading elevation data…</p>
+    </div>
+    <div class="card-actions" style="margin-top:14px;">
+      <button id="detailSaveBtn" class="pill-btn outline">Save</button>
+      <button id="detailLogBtn" class="pill-btn pine">Log as hiked</button>
+    </div>
+    ${trail.osm_url ? `<a class="map-link" href="${trail.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>` : ""}
+  `;
+
+  document.getElementById("detailSaveBtn").addEventListener("click", () => saveToWishlist(trail));
+  document.getElementById("detailLogBtn").addEventListener("click", () => openCompleteModal(trail));
+  document.getElementById("trailDetailOverlay").classList.remove("hidden");
+
+  if (hasGeometry) {
+    setTimeout(() => {
+      const map = L.map("detailMiniMap", {
+        attributionControl: false, zoomControl: false, dragging: false,
+        scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false,
+      });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+      const bounds = [];
+      trail.geometry.forEach((seg) => {
+        if (seg.length < 2) return;
+        L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+        seg.forEach((pt) => bounds.push(pt));
+      });
+      if (bounds.length) map.fitBounds(bounds, { padding: [10, 10] });
+      document.getElementById("detailMiniMapBox").addEventListener("click", () => openTrailMapModal(trail));
+    }, 0);
+    loadElevationChart(trail);
+  } else {
+    document.getElementById("elevationNote").textContent = "No mapped path, so no elevation profile is available.";
+  }
+}
+
+document.getElementById("detailBack").addEventListener("click", () => {
+  document.getElementById("trailDetailOverlay").classList.add("hidden");
+});
+
+let elevationChartInstance = null;
+async function loadElevationChart(trail) {
+  const note = document.getElementById("elevationNote");
+  try {
+    // Flatten geometry into one path with cumulative distance, then sample
+    // ~20 evenly spaced points (Open-Elevation is slow with too many points).
+    const allPoints = [];
+    trail.geometry.forEach((seg) => seg.forEach((pt) => allPoints.push(pt)));
+    if (allPoints.length < 2) throw new Error("not enough points");
+
+    const cum = [0];
+    for (let i = 1; i < allPoints.length; i++) {
+      cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
+    }
+    const totalKm = cum[cum.length - 1];
+    const SAMPLES = 20;
+    const sampled = [];
+    for (let i = 0; i < SAMPLES; i++) {
+      const targetDist = (i / (SAMPLES - 1)) * totalKm;
+      let idx = cum.findIndex((d) => d >= targetDist);
+      if (idx === -1) idx = allPoints.length - 1;
+      sampled.push({ point: allPoints[idx], km: cum[idx] });
+    }
+
+    const locString = sampled.map((s) => `${s.point[0]},${s.point[1]}`).join("|");
+    const resp = await fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${locString}`);
+    if (!resp.ok) throw new Error("elevation API error");
+    const data = await resp.json();
+    const elevations = data.results.map((r) => r.elevation);
+    const gainM = elevations.reduce((sum, e, i) => (i > 0 && e > elevations[i - 1] ? sum + (e - elevations[i - 1]) : sum), 0);
+
+    if (elevationChartInstance) elevationChartInstance.destroy();
+    const ctx = document.getElementById("elevationChart");
+    elevationChartInstance = new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: sampled.map((s) => s.km.toFixed(1)),
+        datasets: [{
+          data: elevations,
+          borderColor: "#1B4332",
+          backgroundColor: "rgba(27,67,50,0.12)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { title: { display: true, text: "km" } },
+          y: { title: { display: true, text: "m elevation" } },
+        },
+      },
+    });
+    note.textContent = `Approx. ${Math.round(gainM)} m elevation gain, estimated from sampled points.`;
+  } catch (err) {
+    console.error(err);
+    note.textContent = "Elevation data isn't available for this trail right now.";
+  }
 }
 
 async function runSearch() {
@@ -494,7 +644,7 @@ function renderSaved() {
   el.innerHTML = wishlist.map((w) => `
     <div class="card">
       <button class="delete-btn" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
-      <h3>${escapeHtml(w.name)}</h3>
+      <h3 class="trail-name-link" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
       <p class="state">${escapeHtml(w.location || "")}</p>
       ${w.notes ? `<p class="notes">${escapeHtml(w.notes)}</p>` : ""}
       <div class="card-actions">
@@ -505,6 +655,16 @@ function renderSaved() {
     </div>
   `).join("");
 
+  el.querySelectorAll("[data-detail-wish]").forEach((el2) => {
+    el2.addEventListener("click", () => {
+      const w = wishlist.find((x) => x.id === el2.dataset.detailWish);
+      openTrailDetail({
+        name: w.name, state: w.location, distance_km: null, difficulty: null,
+        surface: null, segments: null, geometry: w.geometry, lat: w.lat, lon: w.lon,
+        osm_url: w.osm_url, savedNotes: w.notes,
+      });
+    });
+  });
   el.querySelectorAll("[data-delete-wish]").forEach((btn) => {
     btn.addEventListener("click", () => {
       wishlist = wishlist.filter((w) => w.id !== btn.dataset.deleteWish);
