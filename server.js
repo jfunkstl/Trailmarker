@@ -230,6 +230,30 @@ function parkKind(tags) {
   return "Park";
 }
 
+// Shared helper: tries each Overpass mirror in turn for a given query,
+// returning parsed JSON or throwing once all mirrors have failed.
+async function runOverpassQuery(overpassQuery) {
+  let lastError = null;
+  for (const url of OVERPASS_URLS) {
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
+          "Accept": "application/json, text/plain, */*",
+        },
+        body: overpassQuery,
+      });
+      if (!resp.ok) { lastError = await resp.text(); continue; }
+      return await resp.json();
+    } catch (innerErr) {
+      lastError = String(innerErr.message || innerErr);
+    }
+  }
+  throw new Error(lastError || "All Overpass mirrors failed");
+}
+
 app.get("/api/parks", async (req, res) => {
   const stateInput = (req.query.state || "").trim();
   const q = (req.query.q || "").trim();
@@ -246,50 +270,51 @@ app.get("/api/parks", async (req, res) => {
   }
 
   const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
-  const overpassQuery = `
-    [out:json][timeout:25];
-    area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+  // Split into two lighter queries (run in parallel) instead of one heavy
+  // 8-clause query — a single query scanning a whole state for every park
+  // tag combined was prone to silently timing out / returning truncated
+  // results on the free Overpass mirrors.
+  const areaSetup = `area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;`;
+  const cityParksQuery = `
+    [out:json][timeout:40];
+    ${areaSetup}
     (
       way["leisure"="park"]${nameFilter}(area.a);
       relation["leisure"="park"]${nameFilter}(area.a);
       way["leisure"="nature_reserve"]${nameFilter}(area.a);
       relation["leisure"="nature_reserve"]${nameFilter}(area.a);
+    );
+    out tags center 200;
+  `.trim();
+  const protectedParksQuery = `
+    [out:json][timeout:40];
+    ${areaSetup}
+    (
       way["boundary"="national_park"]${nameFilter}(area.a);
       relation["boundary"="national_park"]${nameFilter}(area.a);
       way["boundary"="protected_area"]${nameFilter}(area.a);
       relation["boundary"="protected_area"]${nameFilter}(area.a);
     );
-    out tags center;
+    out tags center 200;
   `.trim();
 
   try {
-    let data = null;
-    let lastError = null;
-    for (const url of OVERPASS_URLS) {
-      try {
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "text/plain",
-            "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
-            "Accept": "application/json, text/plain, */*",
-          },
-          body: overpassQuery,
-        });
-        if (!resp.ok) { lastError = await resp.text(); continue; }
-        data = await resp.json();
-        break;
-      } catch (innerErr) {
-        lastError = String(innerErr.message || innerErr);
-        continue;
-      }
-    }
-    if (!data) {
-      return res.status(502).json({ error: "All Overpass mirrors are busy right now — please try again in a minute.", detail: (lastError || "").slice(0, 500) });
+    const [cityResult, protectedResult] = await Promise.allSettled([
+      runOverpassQuery(cityParksQuery),
+      runOverpassQuery(protectedParksQuery),
+    ]);
+
+    if (cityResult.status === "rejected" && protectedResult.status === "rejected") {
+      return res.status(502).json({ error: "All Overpass mirrors are busy right now — please try again in a minute." });
     }
 
+    const elements = [
+      ...(cityResult.status === "fulfilled" ? cityResult.value.elements || [] : []),
+      ...(protectedResult.status === "fulfilled" ? protectedResult.value.elements || [] : []),
+    ];
+
     const seen = new Map();
-    (data.elements || []).forEach((el) => {
+    elements.forEach((el) => {
       const name = el.tags && el.tags.name;
       const center = el.center;
       if (!name || !center) return;
@@ -315,10 +340,73 @@ app.get("/api/parks", async (req, res) => {
 });
 // flaky/CORS-restricted for direct browser calls. Tries Open-Topo-Data first
 // (more reliable), falls back to Open-Elevation if that fails.
+// Official NPS descriptions + current alerts, for National Park Service units.
+// Requires a free API key (https://www.nps.gov/subjects/developer/get-started.htm)
+// set as the NPS_API_KEY environment variable on Render. Until that's set,
+// this just reports itself unavailable so the app falls back to Wikipedia/OSM.
+app.get("/api/park-info", async (req, res) => {
+  const name = (req.query.name || "").trim();
+  if (!process.env.NPS_API_KEY) {
+    return res.json({ available: false, reason: "NPS_API_KEY not configured" });
+  }
+  if (!name) return res.status(400).json({ error: "Missing name" });
+
+  try {
+    const searchResp = await fetch(`https://developer.nps.gov/api/v1/parks?q=${encodeURIComponent(name)}&limit=1&api_key=${process.env.NPS_API_KEY}`);
+    if (!searchResp.ok) throw new Error(`NPS parks lookup returned ${searchResp.status}`);
+    const searchData = await searchResp.json();
+    const park = searchData.data && searchData.data[0];
+    if (!park) return res.json({ available: false, reason: "No matching NPS unit" });
+
+    let alerts = [];
+    try {
+      const alertResp = await fetch(`https://developer.nps.gov/api/v1/alerts?parkCode=${park.parkCode}&api_key=${process.env.NPS_API_KEY}`);
+      if (alertResp.ok) {
+        const alertData = await alertResp.json();
+        alerts = (alertData.data || []).map((a) => ({ title: a.title, description: a.description, category: a.category }));
+      }
+    } catch (alertErr) {
+      console.error("NPS alerts lookup failed:", alertErr.message || alertErr);
+    }
+
+    res.json({
+      available: true,
+      description: park.description,
+      url: park.url,
+      alerts,
+    });
+  } catch (err) {
+    console.error("NPS lookup failed:", err.message || err);
+    res.json({ available: false, reason: "NPS API error" });
+  }
+});
+
 app.get("/api/elevation", async (req, res) => {
   const locations = (req.query.locations || "").trim(); // "lat,lon|lat,lon|..."
   if (!locations) return res.status(400).json({ error: "Missing locations" });
+  const points = locations.split("|").map((p) => p.split(",").map(Number));
 
+  // USGS's Elevation Point Query Service is official, free, no key, and much
+  // more reliable than the community elevation APIs — but it's one point per
+  // request, so we fire them concurrently.
+  try {
+    const results = await Promise.all(
+      points.map(async ([lat, lon]) => {
+        const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&units=Meters&wkid=4326&includeDate=False`;
+        const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+        if (!resp.ok) throw new Error(`USGS EPQS returned ${resp.status}`);
+        const data = await resp.json();
+        const value = data && data.value;
+        if (value === undefined || value === null || Number.isNaN(Number(value))) throw new Error("no value");
+        return Number(value);
+      })
+    );
+    return res.json({ elevations: results, source: "usgs-epqs" });
+  } catch (err) {
+    console.error("USGS EPQS failed:", err.message || err);
+  }
+
+  // Fallback: Open-Topo-Data (covers non-US points too, if this app ever expands).
   try {
     const otdResp = await fetch(`https://api.opentopodata.org/v1/srtm90m?locations=${locations}`, {
       headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" },
@@ -331,18 +419,6 @@ app.get("/api/elevation", async (req, res) => {
     }
   } catch (err) {
     console.error("Open-Topo-Data failed:", err.message || err);
-  }
-
-  try {
-    const oeResp = await fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${locations}`, {
-      headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" },
-    });
-    if (oeResp.ok) {
-      const oeData = await oeResp.json();
-      return res.json({ elevations: oeData.results.map((r) => r.elevation), source: "open-elevation" });
-    }
-  } catch (err) {
-    console.error("Open-Elevation failed:", err.message || err);
   }
 
   res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
