@@ -226,14 +226,14 @@ function stopTracking() {
 
 function openSaveTrackModal() {
   openModal("Save this hike", `
-    <p class="condensed" style="font-size:1.1rem;color:var(--pine);display:flex;gap:20px;margin-bottom:14px;">
+    <p class="font-condensed text-lg text-pine flex gap-5 mb-3.5">
       <span>${fmtDist(distance)}</span><span>${fmtTime(elapsed)}</span><span>${caloriesFromKm(distance / 1000)} cal</span>
     </p>
-    <label class="field"><span class="label">Name</span><input id="trackName" placeholder="Ridge Trail loop" value="${followedTrail ? escapeHtml(followedTrail.name) : ""}" autofocus /></label>
-    <label class="field"><span class="label">Notes</span><textarea id="trackNotes" rows="3" placeholder="Muddy near the summit, worth it for the view"></textarea></label>
-    <div class="modal-actions">
-      <button id="discardTrackBtn" class="pill-btn outline">Discard</button>
-      <button id="saveTrackBtn" class="pill-btn pine">Save</button>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="trackName" placeholder="Ridge Trail loop" value="${followedTrail ? escapeHtml(followedTrail.name) : ""}" autofocus /></label>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="trackNotes" rows="3" placeholder="Muddy near the summit, worth it for the view"></textarea></label>
+    <div class="flex gap-2 mt-4">
+      <button id="discardTrackBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Discard</button>
+      <button id="saveTrackBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition">Save</button>
     </div>
   `);
   document.getElementById("discardTrackBtn").addEventListener("click", () => {
@@ -266,19 +266,19 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 function renderJournal() {
   const list = document.getElementById("journalList");
   if (hikes.length === 0) {
-    list.innerHTML = `<div class="empty">No hikes logged yet. Track one, or add a past hike by hand.</div>`;
+    list.innerHTML = `<div class="text-center text-sm opacity-60 py-8">No hikes logged yet. Track one, or add a past hike by hand.</div>`;
     return;
   }
   list.innerHTML = hikes.map((h) => `
-    <div class="card">
-      <button class="delete-btn" data-delete-hike="${h.id}" aria-label="Delete hike">✕</button>
-      <p class="state">${fmtDate(h.date)}</p>
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-hike="${h.id}" aria-label="Delete hike">✕</button>
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${fmtDate(h.date)}</p>
       <h3>${escapeHtml(h.name)}</h3>
-      <div class="stats">
+      <div class="flex flex-wrap gap-2 my-2">
         <span>${fmtDist(h.distance || 0)}</span>
         <span>${fmtTime(h.duration || 0)}</span>
       </div>
-      ${h.notes ? `<p class="notes">${escapeHtml(h.notes)}</p>` : ""}
+      ${h.notes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(h.notes)}</p>` : ""}
     </div>
   `).join("");
 
@@ -294,16 +294,16 @@ function renderJournal() {
 
 document.getElementById("addHikeBtn").addEventListener("click", () => {
   openModal("Add a hike", `
-    <label class="field"><span class="label">Name</span><input id="manName" placeholder="Blue Ridge overlook" autofocus /></label>
-    <label class="field"><span class="label">Date</span><input id="manDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
-    <div class="field-row">
-      <label class="field"><span class="label">Distance (km)</span><input id="manDist" type="number" step="0.1" placeholder="8.5" /></label>
-      <label class="field"><span class="label">Hours</span><input id="manH" type="number" placeholder="2" /></label>
-      <label class="field"><span class="label">Min</span><input id="manM" type="number" placeholder="30" /></label>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manName" placeholder="Blue Ridge overlook" autofocus /></label>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Date</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+    <div class="flex gap-2.5">
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Distance (km)</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manDist" type="number" step="0.1" placeholder="8.5" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Hours</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manH" type="number" placeholder="2" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Min</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manM" type="number" placeholder="30" /></label>
     </div>
-    <label class="field"><span class="label">Notes</span><textarea id="manNotes" rows="2"></textarea></label>
-    <div class="modal-actions">
-      <button id="manSaveBtn" class="pill-btn pine" style="width:100%">Save hike</button>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="manNotes" rows="2"></textarea></label>
+    <div class="flex gap-2 mt-4">
+      <button id="manSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save hike</button>
     </div>
   `);
   document.getElementById("manSaveBtn").addEventListener("click", () => {
@@ -335,7 +335,10 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
     btn.classList.add("active");
     searchMode = btn.dataset.mode;
     const input = document.getElementById("query");
-    input.placeholder = searchMode === "city" ? "Search a city (e.g. Boulder)" : "Search trail name (optional)";
+    input.placeholder = searchMode === "city" ? "Search a city (e.g. Boulder)"
+      : searchMode === "parks" ? "Search park name (optional)"
+      : "Search trail name (optional)";
+    document.getElementById("difficultyFilters").classList.toggle("hidden", searchMode === "parks");
   });
 });
 
@@ -366,24 +369,24 @@ function renderSearchResults(trails) {
   const filtered = currentDifficulty === "All" ? trails : trails.filter((t) => t.difficulty === currentDifficulty);
   const el = document.getElementById("results");
   if (filtered.length === 0) {
-    el.innerHTML = `<div class="empty">No trails matched. Try a different state, search term, or difficulty.</div>`;
+    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">No trails matched. Try a different state, search term, or difficulty.</div>`;
     return;
   }
   el.innerHTML = filtered.map((t, i) => `
-    <div class="card">
-      <p class="state">${escapeHtml(t.state)}${t.segments > 1 ? ` · ${t.segments} mapped segments` : ""}</p>
-      <h3 class="trail-name-link" data-detail-idx="${i}">${escapeHtml(t.name)}</h3>
-      <div class="stats">
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(t.state)}${t.segments > 1 ? ` · ${t.segments} mapped segments` : ""}</p>
+      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-idx="${i}">${escapeHtml(t.name)}</h3>
+      <div class="flex flex-wrap gap-2 my-2">
         <span>${t.distance_km.toFixed(1)} km</span>
-        <span class="badge">${t.difficulty}</span>
-        ${t.surface ? `<span class="badge">${escapeHtml(t.surface)}</span>` : ""}
+        <span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${t.difficulty}</span>
+        ${t.surface ? `<span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(t.surface)}</span>` : ""}
       </div>
-      <div class="card-actions">
-        <button class="pill-btn outline" data-map-idx="${i}">Map</button>
-        <button class="pill-btn outline" data-save-idx="${i}">Save</button>
-        <button class="pill-btn pine" data-log-idx="${i}">Log as hiked</button>
+      <div class="flex gap-2 mt-3 flex-wrap">
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-map-idx="${i}">Map</button>
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-save-idx="${i}">Save</button>
+        <button class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition" data-log-idx="${i}">Log as hiked</button>
       </div>
-      <a class="map-link" href="${t.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>
+      <a class="block text-sm text-pine underline mt-2" href="${t.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>
     </div>
   `).join("");
 
@@ -401,11 +404,84 @@ function renderSearchResults(trails) {
   });
 }
 
+function renderParkResults(parks) {
+  const el = document.getElementById("results");
+  if (parks.length === 0) {
+    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">No parks matched. Try a different state or search term.</div>`;
+    return;
+  }
+  el.innerHTML = parks.map((p, i) => `
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(p.state)}</p>
+      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-park-detail-idx="${i}">${escapeHtml(p.name)}</h3>
+      <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(p.kind)}</span></div>
+      <div class="flex gap-2 mt-3 flex-wrap">
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-park-map-idx="${i}">Map</button>
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-park-save-idx="${i}">Save</button>
+      </div>
+      <a class="block text-sm text-pine underline mt-2" href="${p.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>
+    </div>
+  `).join("");
+
+  el.querySelectorAll("[data-park-detail-idx]").forEach((el2) => {
+    el2.addEventListener("click", () => openParkDetail(parks[Number(el2.dataset.parkDetailIdx)]));
+  });
+  el.querySelectorAll("[data-park-map-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => openParkMapModal(parks[Number(btn.dataset.parkMapIdx)]));
+  });
+  el.querySelectorAll("[data-park-save-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const p = parks[Number(btn.dataset.parkSaveIdx)];
+      saveToWishlist({ name: p.name, state: p.state, distance_km: 0, difficulty: p.kind, geometry: null, lat: p.lat, lon: p.lon, osm_url: p.osm_url });
+    });
+  });
+}
+
+function openParkMapModal(park) {
+  openModal(park.name, `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="trailModalMap"></div>`);
+  setTimeout(() => {
+    const map = L.map("trailModalMap", { attributionControl: false }).setView([park.lat, park.lon], 12);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    L.marker([park.lat, park.lon]).addTo(map).bindPopup(park.name);
+  }, 0);
+}
+
+function openParkDetail(park) {
+  document.getElementById("detailTitle").textContent = park.name;
+  document.getElementById("detailBody").innerHTML = `
+    <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(park.state)}</p>
+    <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(park.kind)}</span></div>
+    <p class="leading-relaxed my-3" id="trailDescriptionText">Location is mapped from OpenStreetMap's park boundary data. Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.</p>
+    <div class="my-3.5">
+      <div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div>
+      <p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>
+    </div>
+    <div class="flex gap-2 mt-3.5 flex-wrap">
+      <button id="detailSaveBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Save</button>
+    </div>
+    <a class="block text-sm text-pine underline mt-2" href="${park.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>
+  `;
+  document.getElementById("detailSaveBtn").addEventListener("click", () =>
+    saveToWishlist({ name: park.name, state: park.state, distance_km: 0, difficulty: park.kind, geometry: null, lat: park.lat, lon: park.lon, osm_url: park.osm_url })
+  );
+  document.getElementById("trailDetailOverlay").classList.remove("hidden");
+  loadRichDescription(park, " Elevation profiles aren't shown for parks since they cover an area rather than a single path — check a specific trail inside the park for that.");
+  setTimeout(() => {
+    const map = L.map("detailMiniMap", {
+      attributionControl: false, zoomControl: false, dragging: false,
+      scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false,
+    }).setView([park.lat, park.lon], 11);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    L.marker([park.lat, park.lon]).addTo(map);
+    document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openParkMapModal(park));
+  }, 0);
+}
+
 function openTrailMapModal(trail) {
   const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
   openModal(trail.name, hasGeometry
-    ? `<div class="modal-map" id="trailModalMap"></div><p class="fine-print">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
-    : `<p class="empty">No mapped path is available for this trail yet.</p>`);
+    ? `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="trailModalMap"></div><p class="text-xs opacity-60 mt-1">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
+    : `<p class="text-center text-sm opacity-60 py-8">No mapped path is available for this trail yet.</p>`);
   if (!hasGeometry) return;
 
   setTimeout(() => {
@@ -420,6 +496,28 @@ function openTrailMapModal(trail) {
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
     else map.setView([trail.lat, trail.lon], 12);
   }, 0);
+}
+
+// Tries an OSM-authored description first, then a Wikipedia summary for
+// well-known trails, and otherwise leaves the auto-generated fallback
+// (already shown) in place.
+async function loadRichDescription(trail, suffix = "") {
+  const el = document.getElementById("trailDescriptionText");
+  if (trail.osm_description) {
+    el.textContent = trail.osm_description + suffix;
+    return;
+  }
+  try {
+    const resp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(trail.name)}`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.extract && data.type !== "disambiguation" && data.content_urls) {
+      el.innerHTML = `${escapeHtml(data.extract)}${escapeHtml(suffix)} <a href="${data.content_urls.desktop.page}" target="_blank" rel="noopener">Read more on Wikipedia →</a>`;
+    }
+  } catch (err) {
+    console.error("Wikipedia lookup failed:", err);
+    // leave the auto-generated/default description as-is
+  }
 }
 
 function buildTrailDescription(trail) {
@@ -446,35 +544,36 @@ function openTrailDetail(trail) {
   const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
 
   const factsHtml = trail.distance_km != null
-    ? `<div class="stats">
+    ? `<div class="flex flex-wrap gap-2 my-2">
         <span>${trail.distance_km.toFixed(1)} km</span>
-        <span class="badge">${trail.difficulty}</span>
-        ${trail.surface ? `<span class="badge">${escapeHtml(trail.surface)}</span>` : ""}
+        <span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${trail.difficulty}</span>
+        ${trail.surface ? `<span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(trail.surface)}</span>` : ""}
       </div>`
-    : trail.savedNotes ? `<p class="notes">${escapeHtml(trail.savedNotes)}</p>` : "";
+    : trail.savedNotes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(trail.savedNotes)}</p>` : "";
 
   document.getElementById("detailBody").innerHTML = `
-    <p class="state">${escapeHtml(trail.state || "")}${trail.segments > 1 ? ` · ${trail.segments} mapped segments` : ""}</p>
+    <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(trail.state || "")}${trail.segments > 1 ? ` · ${trail.segments} mapped segments` : ""}</p>
     ${factsHtml}
-    <p class="description">${buildTrailDescription(trail)}</p>
-    <div class="mini-map-box" id="detailMiniMapBox">
-      ${hasGeometry ? `<div class="leaflet-map mini" id="detailMiniMap"></div><p class="fine-print center">Tap map to expand</p>` : `<p class="empty">No mapped path available.</p>`}
+    <p class="leading-relaxed my-3" id="trailDescriptionText">${buildTrailDescription(trail)}</p>
+    <div class="my-3.5">
+      ${hasGeometry ? `<div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div><p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>` : `<p class="text-center text-sm opacity-60 py-8">No mapped path available.</p>`}
     </div>
-    <div class="elevation-box">
-      <p class="condensed eyebrow">Elevation profile</p>
+    <div class="bg-card border border-line rounded-2xl p-3.5 mt-3.5">
+      <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1 block">Elevation profile</p>
       <canvas id="elevationChart" height="140"></canvas>
-      <p class="fine-print" id="elevationNote">Loading elevation data…</p>
+      <p class="text-xs opacity-60 mt-1" id="elevationNote">Loading elevation data…</p>
     </div>
-    <div class="card-actions" style="margin-top:14px;">
-      <button id="detailSaveBtn" class="pill-btn outline">Save</button>
-      <button id="detailLogBtn" class="pill-btn pine">Log as hiked</button>
+    <div class="flex gap-2 mt-3.5 flex-wrap">
+      <button id="detailSaveBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Save</button>
+      <button id="detailLogBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition">Log as hiked</button>
     </div>
-    ${trail.osm_url ? `<a class="map-link" href="${trail.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>` : ""}
+    ${trail.osm_url ? `<a class="block text-sm text-pine underline mt-2" href="${trail.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>` : ""}
   `;
 
   document.getElementById("detailSaveBtn").addEventListener("click", () => saveToWishlist(trail));
   document.getElementById("detailLogBtn").addEventListener("click", () => openCompleteModal(trail));
   document.getElementById("trailDetailOverlay").classList.remove("hidden");
+  loadRichDescription(trail);
 
   if (hasGeometry) {
     setTimeout(() => {
@@ -490,7 +589,7 @@ function openTrailDetail(trail) {
         seg.forEach((pt) => bounds.push(pt));
       });
       if (bounds.length) map.fitBounds(bounds, { padding: [10, 10] });
-      document.getElementById("detailMiniMapBox").addEventListener("click", () => openTrailMapModal(trail));
+      document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openTrailMapModal(trail));
     }, 0);
     loadElevationChart(trail);
   } else {
@@ -527,10 +626,10 @@ async function loadElevationChart(trail) {
     }
 
     const locString = sampled.map((s) => `${s.point[0]},${s.point[1]}`).join("|");
-    const resp = await fetch(`https://api.open-elevation.com/api/v1/lookup?locations=${locString}`);
-    if (!resp.ok) throw new Error("elevation API error");
+    const resp = await fetch(`/api/elevation?locations=${encodeURIComponent(locString)}`);
     const data = await resp.json();
-    const elevations = data.results.map((r) => r.elevation);
+    if (!resp.ok) throw new Error(data.error || "elevation API error");
+    const elevations = data.elevations;
     const gainM = elevations.reduce((sum, e, i) => (i > 0 && e > elevations[i - 1] ? sum + (e - elevations[i - 1]) : sum), 0);
 
     if (elevationChartInstance) elevationChartInstance.destroy();
@@ -572,6 +671,31 @@ async function runSearch() {
 
   if (searchMode === "city" && !q) {
     status.textContent = "Enter a city name to search near.";
+    return;
+  }
+
+  if (searchMode === "parks") {
+    status.textContent = `Searching live OpenStreetMap data for parks in ${state}…`;
+    document.getElementById("results").innerHTML = "";
+    searchBtn.disabled = true;
+    try {
+      const params = new URLSearchParams({ state });
+      if (q) params.set("q", q);
+      const res = await fetch(`/api/parks?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = `Error: ${data.error || "something went wrong"}`;
+        return;
+      }
+      lastResults = data.parks;
+      status.textContent = `${data.parks.length} park${data.parks.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""} — national, state, and city parks together.`;
+      renderParkResults(lastResults);
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Is it running?";
+      console.error(err);
+    } finally {
+      searchBtn.disabled = false;
+    }
     return;
   }
 
@@ -638,19 +762,19 @@ function saveToWishlist(trail) {
 function renderSaved() {
   const el = document.getElementById("savedList");
   if (wishlist.length === 0) {
-    el.innerHTML = `<div class="empty">Nothing saved yet — search a state and tap Save on a trail.</div>`;
+    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">Nothing saved yet — search a state and tap Save on a trail.</div>`;
     return;
   }
   el.innerHTML = wishlist.map((w) => `
-    <div class="card">
-      <button class="delete-btn" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
-      <h3 class="trail-name-link" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
-      <p class="state">${escapeHtml(w.location || "")}</p>
-      ${w.notes ? `<p class="notes">${escapeHtml(w.notes)}</p>` : ""}
-      <div class="card-actions">
-        ${w.geometry ? `<button class="pill-btn outline" data-track-wish="${w.id}">Track this</button>` : ""}
-        <button class="pill-btn pine" data-complete-wish="${w.id}">Mark as hiked</button>
-        ${w.osm_url ? `<a class="map-link" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
+      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(w.location || "")}</p>
+      ${w.notes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(w.notes)}</p>` : ""}
+      <div class="flex gap-2 mt-3 flex-wrap">
+        ${w.geometry ? `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-track-wish="${w.id}">Track this</button>` : ""}
+        <button class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition" data-complete-wish="${w.id}">Mark as hiked</button>
+        ${w.osm_url ? `<a class="block text-sm text-pine underline mt-2" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
       </div>
     </div>
   `).join("");
@@ -690,15 +814,15 @@ function renderSaved() {
 
 function openCompleteModal(trail) {
   openModal(`Hiked: ${trail.name}`, `
-    <label class="field"><span class="label">Date</span><input id="cDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
-    <div class="field-row">
-      <label class="field"><span class="label">Distance (km)</span><input id="cDist" type="number" step="0.1" value="${trail.distance_km ? trail.distance_km.toFixed(1) : ""}" /></label>
-      <label class="field"><span class="label">Hours</span><input id="cH" type="number" placeholder="2" /></label>
-      <label class="field"><span class="label">Min</span><input id="cM" type="number" placeholder="30" /></label>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Date</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+    <div class="flex gap-2.5">
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Distance (km)</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDist" type="number" step="0.1" value="${trail.distance_km ? trail.distance_km.toFixed(1) : ""}" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Hours</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cH" type="number" placeholder="2" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Min</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cM" type="number" placeholder="30" /></label>
     </div>
-    <label class="field"><span class="label">Notes</span><textarea id="cNotes" rows="2" placeholder="${escapeHtml(trail.notes || "")}"></textarea></label>
-    <div class="modal-actions">
-      <button id="cSaveBtn" class="pill-btn pine" style="width:100%">Move to journal</button>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cNotes" rows="2" placeholder="${escapeHtml(trail.notes || "")}"></textarea></label>
+    <div class="flex gap-2 mt-4">
+      <button id="cSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Move to journal</button>
     </div>
   `);
   document.getElementById("cSaveBtn").addEventListener("click", () => {
