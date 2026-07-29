@@ -201,10 +201,13 @@
   </main>
 
   <div id="modalOverlay" class="hidden fixed inset-0 z-[110] bg-black/40 flex items-end sm:items-center justify-center">
-    <div class="bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5">
+    <div id="modalPanel" class="bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200">
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-display text-xl" id="modalTitle">Save this hike</h3>
-        <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
+        <div class="flex items-center gap-2">
+          <button id="modalMaximize" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">⤢</button>
+          <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
+        </div>
       </div>
       <div id="modalBody"></div>
     </div>
