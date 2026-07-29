@@ -391,6 +391,52 @@ app.get("/api/park-info", async (req, res) => {
   }
 });
 
+// Official USFS trail data (National Forest System Trails layer) — gives a
+// real trail number, surface type, managing forest, and hiker-access status
+// for trails inside National Forests. Free, no key, no signup.
+app.get("/api/usfs-trail-info", async (req, res) => {
+  const name = (req.query.name || "").trim();
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (!name || Number.isNaN(lat) || Number.isNaN(lon)) {
+    return res.json({ available: false });
+  }
+
+  const buffer = 0.3; // degrees — generous enough to catch a whole trail's segments
+  const envelope = `${lon - buffer},${lat - buffer},${lon + buffer},${lat + buffer}`;
+  const safeName = name.replace(/'/g, "''").slice(0, 80);
+  const where = `UPPER(trail_name) LIKE UPPER('%${safeName}%')`;
+  const url = "https://apps.fs.usda.gov/ArcX/rest/services/EDW/EDW_TrailNFSPublish_01/MapServer/0/query"
+    + `?where=${encodeURIComponent(where)}&geometry=${envelope}&geometryType=esriGeometryEnvelope`
+    + `&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&f=json`;
+
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) return res.json({ available: false });
+    const data = await resp.json();
+    const features = data.features || [];
+    if (features.length === 0) return res.json({ available: false });
+
+    const first = features[0].attributes;
+    let totalMiles = 0;
+    features.forEach((f) => { totalMiles += Number(f.attributes.gis_miles) || 0; });
+
+    res.json({
+      available: true,
+      trailNumber: first.trail_no || null,
+      trailType: first.trail_type || null,
+      trailClass: first.trail_class || null,
+      surface: first.trail_surface || null,
+      managingOrg: first.admin_org || first.managing_org || null,
+      hikerAllowed: first.hiker_pedestrian_managed === "YES" || first.hiker_pedestrian_managed === 1,
+      miles: totalMiles > 0 ? Math.round(totalMiles * 10) / 10 : null,
+    });
+  } catch (err) {
+    console.error("USFS trail lookup failed:", err.message || err);
+    res.json({ available: false });
+  }
+});
+
 app.get("/api/elevation", async (req, res) => {
   const locations = (req.query.locations || "").trim(); // "lat,lon|lat,lon|..."
   if (!locations) return res.status(400).json({ error: "Missing locations" });
