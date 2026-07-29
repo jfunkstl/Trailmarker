@@ -142,16 +142,44 @@ const modalOverlay = document.getElementById("modalOverlay");
 const modalTitle = document.getElementById("modalTitle");
 const modalBody = document.getElementById("modalBody");
 
-function openModal(title, bodyHtml) {
+const modalPanel = document.getElementById("modalPanel");
+const modalMaximizeBtn = document.getElementById("modalMaximize");
+let modalMaximized = false;
+let activeModalMap = null; // the Leaflet instance currently shown in the modal, if any
+
+const MODAL_COMPACT_CLASSES = "bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200";
+const MODAL_MAX_CLASSES = "bg-paper w-full h-[92vh] max-h-[92vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
+const MAP_COMPACT_HEIGHT = "300px";
+const MAP_MAX_HEIGHT = "calc(92vh - 130px)";
+
+function openModal(title, bodyHtml, options = {}) {
   modalTitle.textContent = title;
   modalBody.innerHTML = bodyHtml;
   modalOverlay.classList.remove("hidden");
+  modalMaximized = false;
+  modalPanel.className = MODAL_COMPACT_CLASSES;
+  modalMaximizeBtn.classList.toggle("hidden", !options.mapModal);
+  modalMaximizeBtn.textContent = "⤢";
 }
 function closeModal() {
   modalOverlay.classList.add("hidden");
   modalBody.innerHTML = "";
+  activeModalMap = null;
+  modalMaximized = false;
 }
 document.getElementById("modalClose").addEventListener("click", closeModal);
+modalMaximizeBtn.addEventListener("click", () => {
+  modalMaximized = !modalMaximized;
+  modalPanel.className = modalMaximized ? MODAL_MAX_CLASSES : MODAL_COMPACT_CLASSES;
+  modalMaximizeBtn.textContent = modalMaximized ? "⤡" : "⤢";
+  const mapEl = document.getElementById("modalMapContainer");
+  if (mapEl) mapEl.style.height = modalMaximized ? MAP_MAX_HEIGHT : MAP_COMPACT_HEIGHT;
+  setTimeout(() => {
+    if (!activeModalMap) return;
+    activeModalMap.invalidateSize();
+    if (activeModalMap._fitBounds) activeModalMap.fitBounds(activeModalMap._fitBounds, { padding: [20, 20] });
+  }, 210);
+});
 modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) closeModal(); });
 
 // ================= TRACK =================
@@ -627,11 +655,12 @@ function renderParkResults(parks) {
 }
 
 function openParkMapModal(park) {
-  openModal(park.name, `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="trailModalMap"></div>`);
+  openModal(park.name, `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="modalMapContainer"></div>`, { mapModal: true });
   setTimeout(() => {
-    const map = L.map("trailModalMap", { attributionControl: false }).setView([park.lat, park.lon], 12);
+    const map = L.map("modalMapContainer", { attributionControl: false }).setView([park.lat, park.lon], 12);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
     L.marker([park.lat, park.lon]).addTo(map).bindPopup(park.name);
+    activeModalMap = map;
   }, 0);
 }
 
@@ -690,12 +719,12 @@ async function loadParkAlerts(park) {
 function openTrailMapModal(trail) {
   const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
   openModal(trail.name, hasGeometry
-    ? `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="trailModalMap"></div><p class="text-xs opacity-60 mt-1">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
-    : `<p class="text-center text-sm opacity-60 py-8">No mapped path is available for this trail yet.</p>`);
+    ? `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="modalMapContainer"></div><p class="text-xs opacity-60 mt-1">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
+    : `<p class="text-center text-sm opacity-60 py-8">No mapped path is available for this trail yet.</p>`, { mapModal: hasGeometry });
   if (!hasGeometry) return;
 
   setTimeout(() => {
-    const map = L.map("trailModalMap", { attributionControl: false });
+    const map = L.map("modalMapContainer", { attributionControl: false });
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
     const bounds = [];
     trail.geometry.forEach((seg) => {
@@ -705,6 +734,8 @@ function openTrailMapModal(trail) {
     });
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
     else map.setView([trail.lat, trail.lon], 12);
+    activeModalMap = map;
+    activeModalMap._fitBounds = bounds.length ? bounds : null; // reused on maximize/minimize resize
   }, 0);
 }
 
