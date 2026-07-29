@@ -31,6 +31,8 @@
       },
     };
   </script>
+  <link rel="manifest" href="manifest.json" />
+  <meta name="theme-color" content="#1B4332" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body class="bg-paper text-ink font-sans relative pb-6">
@@ -151,6 +153,7 @@
           <option value="">Freestyle (no saved route)</option>
         </select>
       </label>
+      <button id="trackOfflineBtn" class="hidden rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition mb-3">Download map for offline</button>
 
       <div class="flex items-center gap-4 bg-card border border-line rounded-[20px] px-4 py-3.5">
         <button id="trackBtn" class="record-btn shrink-0 w-[60px] h-[60px] rounded-full bg-mustard text-white text-xl shadow-lg active:scale-95 transition" aria-label="Start tracking">
