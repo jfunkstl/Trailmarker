@@ -404,15 +404,22 @@ app.get("/api/elevation", async (req, res) => {
   try {
     const settled = [];
     for (const [lat, lon] of points) {
-      const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&units=Feet&wkid=4326&includeDate=False`;
+      const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&units=Feet`;
       try {
         const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
-        if (!resp.ok) throw new Error(`USGS EPQS returned ${resp.status}`);
+        if (!resp.ok) {
+          const bodyText = await resp.text().catch(() => "");
+          throw new Error(`USGS EPQS returned ${resp.status}: ${bodyText.slice(0, 200)}`);
+        }
         const data = await resp.json();
         const value = data && data.value;
-        if (value === undefined || value === null || Number(value) < -100000 || Number.isNaN(Number(value))) throw new Error("no data at point");
+        if (value === undefined || value === null || Number(value) < -100000 || Number.isNaN(Number(value))) throw new Error(`no usable value in response: ${JSON.stringify(data).slice(0, 200)}`);
         settled.push(Number(value));
       } catch (pointErr) {
+        if (settled.filter((v) => v === null).length === 0) {
+          // Log the first failure in full detail — later ones are probably the same cause.
+          console.error(`USGS EPQS point (${lat},${lon}) failed:`, pointErr.message || pointErr);
+        }
         settled.push(null); // keep the slot so the x-axis stays aligned; chart skips nulls
       }
     }
