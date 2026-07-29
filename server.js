@@ -262,6 +262,7 @@ app.get("/api/parks", async (req, res) => {
   if (!iso) {
     return res.status(400).json({ error: "Unknown or missing state. Send a full state name (California) or two-letter code (CA)." });
   }
+  const stateCode = iso.split("-")[1]; // "US-CA" -> "CA"
 
   const cacheKey = `parks::${iso}::${q.toLowerCase()}`;
   const cached = cache.get(cacheKey);
@@ -269,78 +270,83 @@ app.get("/api/parks", async (req, res) => {
     return res.json({ parks: cached.data, cached: true });
   }
 
-  const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
-  // Split into two lighter queries (run in parallel) instead of one heavy
-  // 8-clause query — a single query scanning a whole state for every park
-  // tag combined was prone to silently timing out / returning truncated
-  // results on the free Overpass mirrors.
-  const areaSetup = `area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;`;
-  const cityParksQuery = `
-    [out:json][timeout:40];
-    ${areaSetup}
-    (
-      way["leisure"="park"]${nameFilter}(area.a);
-      relation["leisure"="park"]${nameFilter}(area.a);
-      way["leisure"="nature_reserve"]${nameFilter}(area.a);
-      relation["leisure"="nature_reserve"]${nameFilter}(area.a);
-    );
-    out tags center 200;
-  `.trim();
-  const protectedParksQuery = `
-    [out:json][timeout:40];
-    ${areaSetup}
-    (
-      way["boundary"="national_park"]${nameFilter}(area.a);
-      relation["boundary"="national_park"]${nameFilter}(area.a);
-      way["boundary"="protected_area"]${nameFilter}(area.a);
-      relation["boundary"="protected_area"]${nameFilter}(area.a);
-    );
-    out tags center 200;
-  `.trim();
+  const results = [];
 
-  try {
-    const [cityResult, protectedResult] = await Promise.allSettled([
-      runOverpassQuery(cityParksQuery),
-      runOverpassQuery(protectedParksQuery),
-    ]);
-
-    if (cityResult.status === "rejected" && protectedResult.status === "rejected") {
-      return res.status(502).json({ error: "All Overpass mirrors are busy right now — please try again in a minute." });
+  // Official NPS units (national parks, monuments, historic sites, recreation
+  // areas, etc.) — reliable and authoritative, but only available once a free
+  // NPS_API_KEY is configured (see /api/park-info comment below for how).
+  if (process.env.NPS_API_KEY) {
+    try {
+      const npsResp = await fetch(`https://developer.nps.gov/api/v1/parks?stateCode=${stateCode}&limit=200`, {
+        headers: { "X-Api-Key": process.env.NPS_API_KEY },
+      });
+      if (npsResp.ok) {
+        const npsData = await npsResp.json();
+        (npsData.data || []).forEach((p) => {
+          if (q && !p.fullName.toLowerCase().includes(q.toLowerCase())) return;
+          const lat = parseFloat(p.latitude);
+          const lon = parseFloat(p.longitude);
+          if (Number.isNaN(lat) || Number.isNaN(lon)) return;
+          results.push({
+            name: p.fullName,
+            state: stateInput,
+            kind: p.designation || "National Park Service Site",
+            lat, lon,
+            osm_description: p.description ? p.description.slice(0, 500) : null,
+            osm_url: p.url,
+          });
+        });
+      } else {
+        console.error("NPS parks lookup returned", npsResp.status);
+      }
+    } catch (err) {
+      console.error("NPS parks lookup failed:", err.message || err);
     }
+  }
 
-    const elements = [
-      ...(cityResult.status === "fulfilled" ? cityResult.value.elements || [] : []),
-      ...(protectedResult.status === "fulfilled" ? protectedResult.value.elements || [] : []),
-    ];
-
-    const seen = new Map();
-    elements.forEach((el) => {
+  // City/local parks from OpenStreetMap — kept to a single simple clause.
+  // The earlier version combined 8 tag conditions in one query and appears
+  // to have been silently timing out on the whole-state scan; this is much
+  // lighter and should actually return results.
+  try {
+    const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
+    const cityQuery = `
+      [out:json][timeout:30];
+      area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+      way["leisure"="park"]${nameFilter}(area.a);
+      out tags center 150;
+    `.trim();
+    const data = await runOverpassQuery(cityQuery);
+    (data.elements || []).forEach((el) => {
       const name = el.tags && el.tags.name;
       const center = el.center;
       if (!name || !center) return;
-      if (seen.has(name)) return; // same park often returned as both way + relation
-      seen.set(name, {
+      results.push({
         name,
         state: stateInput,
-        kind: parkKind(el.tags),
+        kind: "City / Local Park",
         lat: center.lat,
         lon: center.lon,
         osm_description: el.tags.description || null,
         osm_url: `https://www.openstreetmap.org/?mlat=${center.lat}&mlon=${center.lon}#map=13/${center.lat}/${center.lon}`,
       });
     });
-
-    const parks = Array.from(seen.values()).slice(0, 150);
-    cache.set(cacheKey, { data: parks, expires: Date.now() + CACHE_TTL_MS });
-    res.json({ parks, cached: false, source: "OpenStreetMap (Overpass API)" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch park data", detail: String(err.message || err) });
+    console.error("OSM city parks lookup failed:", err.message || err);
+    // Not fatal — NPS results (if any) still get returned below.
   }
+
+  const seen = new Map();
+  results.forEach((p) => { if (!seen.has(p.name)) seen.set(p.name, p); });
+  const parks = Array.from(seen.values()).slice(0, 200);
+
+  if (parks.length === 0 && !process.env.NPS_API_KEY) {
+    return res.json({ parks: [], cached: false, note: "No city parks matched, and national/state park coverage needs an NPS_API_KEY configured on the server to work." });
+  }
+
+  cache.set(cacheKey, { data: parks, expires: Date.now() + CACHE_TTL_MS });
+  res.json({ parks, cached: false });
 });
-// flaky/CORS-restricted for direct browser calls. Tries Open-Topo-Data first
-// (more reliable), falls back to Open-Elevation if that fails.
-// Official NPS descriptions + current alerts, for National Park Service units.
 // Requires a free API key (https://www.nps.gov/subjects/developer/get-started.htm)
 // set as the NPS_API_KEY environment variable on Render. Until that's set,
 // this just reports itself unavailable so the app falls back to Wikipedia/OSM.
@@ -352,7 +358,9 @@ app.get("/api/park-info", async (req, res) => {
   if (!name) return res.status(400).json({ error: "Missing name" });
 
   try {
-    const searchResp = await fetch(`https://developer.nps.gov/api/v1/parks?q=${encodeURIComponent(name)}&limit=1&api_key=${process.env.NPS_API_KEY}`);
+    const searchResp = await fetch(`https://developer.nps.gov/api/v1/parks?q=${encodeURIComponent(name)}&limit=1`, {
+      headers: { "X-Api-Key": process.env.NPS_API_KEY },
+    });
     if (!searchResp.ok) throw new Error(`NPS parks lookup returned ${searchResp.status}`);
     const searchData = await searchResp.json();
     const park = searchData.data && searchData.data[0];
@@ -360,7 +368,9 @@ app.get("/api/park-info", async (req, res) => {
 
     let alerts = [];
     try {
-      const alertResp = await fetch(`https://developer.nps.gov/api/v1/alerts?parkCode=${park.parkCode}&api_key=${process.env.NPS_API_KEY}`);
+      const alertResp = await fetch(`https://developer.nps.gov/api/v1/alerts?parkCode=${park.parkCode}`, {
+        headers: { "X-Api-Key": process.env.NPS_API_KEY },
+      });
       if (alertResp.ok) {
         const alertData = await alertResp.json();
         alerts = (alertData.data || []).map((a) => ({ title: a.title, description: a.description, category: a.category }));
@@ -386,22 +396,31 @@ app.get("/api/elevation", async (req, res) => {
   if (!locations) return res.status(400).json({ error: "Missing locations" });
   const points = locations.split("|").map((p) => p.split(",").map(Number));
 
-  // USGS's Elevation Point Query Service is official, free, no key, and much
-  // more reliable than the community elevation APIs — but it's one point per
-  // request, so we fire them concurrently.
+  // USGS's Elevation Point Query Service is official, free, no key, and far
+  // more reliable than the community elevation APIs. It's one point per
+  // request though, and firing 20 at once was likely triggering rate-limit
+  // failures — a SINGLE failed point used to kill the whole batch (Promise.all).
+  // Now we tolerate partial failures and space requests out a little.
   try {
-    const results = await Promise.all(
-      points.map(async ([lat, lon]) => {
-        const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&units=Meters&wkid=4326&includeDate=False`;
+    const settled = [];
+    for (const [lat, lon] of points) {
+      const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&units=Feet&wkid=4326&includeDate=False`;
+      try {
         const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
         if (!resp.ok) throw new Error(`USGS EPQS returned ${resp.status}`);
         const data = await resp.json();
         const value = data && data.value;
-        if (value === undefined || value === null || Number.isNaN(Number(value))) throw new Error("no value");
-        return Number(value);
-      })
-    );
-    return res.json({ elevations: results, source: "usgs-epqs" });
+        if (value === undefined || value === null || Number(value) < -100000 || Number.isNaN(Number(value))) throw new Error("no data at point");
+        settled.push(Number(value));
+      } catch (pointErr) {
+        settled.push(null); // keep the slot so the x-axis stays aligned; chart skips nulls
+      }
+    }
+    const successCount = settled.filter((v) => v !== null).length;
+    if (successCount >= Math.ceil(points.length * 0.5)) {
+      return res.json({ elevations: settled, source: "usgs-epqs", units: "feet" });
+    }
+    console.error(`USGS EPQS: only ${successCount}/${points.length} points succeeded, falling back`);
   } catch (err) {
     console.error("USGS EPQS failed:", err.message || err);
   }
@@ -413,8 +432,9 @@ app.get("/api/elevation", async (req, res) => {
     });
     if (otdResp.ok) {
       const otdData = await otdResp.json();
-      if (otdData.results && otdData.results.every((r) => r.elevation !== null)) {
-        return res.json({ elevations: otdData.results.map((r) => r.elevation), source: "opentopodata" });
+      if (otdData.results && otdData.results.some((r) => r.elevation !== null)) {
+        const feet = otdData.results.map((r) => (r.elevation === null ? null : r.elevation * 3.28084));
+        return res.json({ elevations: feet, source: "opentopodata", units: "feet" });
       }
     }
   } catch (err) {
