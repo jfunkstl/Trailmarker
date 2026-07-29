@@ -216,7 +216,7 @@ function ensureTrackMap() {
   if (trackMap) return trackMap;
   trackMap = L.map("trackMap", { attributionControl: false }).setView([39.5, -98.35], 4);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(trackMap);
-  walkedLine = L.polyline([], { color: "#1B4332", weight: 5 }).addTo(trackMap);
+  walkedLine = L.polyline([], { color: "#2563EB", weight: 5 }).addTo(trackMap);
   return trackMap;
 }
 
@@ -244,7 +244,7 @@ function selectTrailToFollow(id) {
       const group = L.layerGroup();
       followedTrail.geometry.forEach((seg) => {
         if (seg.length < 2) return;
-        L.polyline(seg, { color: "#E3B23C", weight: 4, dashArray: "2 10" }).addTo(group);
+        L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(group);
         seg.forEach((pt) => bounds.push(pt));
       });
       routeLine = group.addTo(map);
@@ -301,7 +301,7 @@ function startTracking() {
         lastPoint = p;
         walkedLine.addLatLng([p.lat, p.lng]);
         if (!liveDot) {
-          liveDot = L.circleMarker([p.lat, p.lng], { radius: 7, color: "#8a2f22", fillColor: "#E3B23C", fillOpacity: 1, weight: 2 }).addTo(map);
+          liveDot = L.circleMarker([p.lat, p.lng], { radius: 7, color: "#1e3a8a", fillColor: "#2563EB", fillOpacity: 1, weight: 2 }).addTo(map);
         } else {
           liveDot.setLatLng([p.lat, p.lng]);
         }
@@ -742,6 +742,33 @@ function openTrailMapModal(trail) {
 // Tries an OSM-authored description first, then a Wikipedia summary for
 // well-known trails, and otherwise leaves the auto-generated fallback
 // (already shown) in place.
+async function loadUsfsInfo(trail) {
+  const box = document.getElementById("usfsInfoBox");
+  if (!box) return;
+  try {
+    const resp = await fetch(`/api/usfs-trail-info?name=${encodeURIComponent(trail.name)}&lat=${trail.lat}&lon=${trail.lon}`);
+    const data = await resp.json();
+    if (!data.available) return;
+
+    const rows = [];
+    if (data.trailNumber) rows.push(`Trail #${escapeHtml(String(data.trailNumber))}`);
+    if (data.managingOrg) rows.push(escapeHtml(data.managingOrg));
+    if (data.surface) rows.push(`Surface: ${escapeHtml(data.surface)}`);
+    if (data.miles) rows.push(`${(data.miles).toFixed(1)} mi (official)`);
+    if (data.hikerAllowed) rows.push("Open to hikers");
+    if (rows.length === 0) return;
+
+    box.innerHTML = `
+      <div class="bg-card border border-line rounded-2xl p-3.5 my-3">
+        <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1.5">Official USFS trail data</p>
+        <p class="text-sm">${rows.join(" · ")}</p>
+      </div>
+    `;
+  } catch (err) {
+    console.error("USFS info lookup failed:", err);
+  }
+}
+
 async function loadRichDescription(trail, suffix = "") {
   const el = document.getElementById("trailDescriptionText");
   if (trail.osm_description) {
@@ -796,6 +823,7 @@ function openTrailDetail(trail) {
     <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(trail.state || "")}${trail.segments > 1 ? ` · ${trail.segments} mapped segments` : ""}</p>
     ${factsHtml}
     <p class="leading-relaxed my-3" id="trailDescriptionText">${buildTrailDescription(trail)}</p>
+    <div id="usfsInfoBox"></div>
     <div class="my-3.5">
       ${hasGeometry ? `<div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div><p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>` : `<p class="text-center text-sm opacity-60 py-8">No mapped path available.</p>`}
     </div>
@@ -819,6 +847,7 @@ function openTrailDetail(trail) {
   }
   document.getElementById("trailDetailOverlay").classList.remove("hidden");
   loadRichDescription(trail);
+  if (hasGeometry) loadUsfsInfo(trail);
 
   if (hasGeometry) {
     setTimeout(() => {
