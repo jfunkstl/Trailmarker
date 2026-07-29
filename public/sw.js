@@ -3,7 +3,7 @@
 // tiles so a trail you've viewed — or explicitly downloaded — stays visible
 // offline, since that's the actual point of an offline map for hiking.
 
-const SHELL_CACHE = "trailseeker-shell-v1";
+const SHELL_CACHE = "trailseeker-shell-v2";
 const TILE_CACHE = "trailseeker-tiles-v1";
 
 const SHELL_FILES = [
@@ -67,22 +67,21 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // App shell + same-origin static files + CDN libraries: cache-first,
-  // falling back to network, and updating the cache as things are fetched.
+  // App shell + same-origin static files + CDN libraries: NETWORK-FIRST.
+  // (Cache-first here was the bug — once cached, the app would keep serving
+  // old code forever and never pick up updates. Now it always tries the
+  // network first, and only falls back to the cached copy when offline.)
   if (event.request.method === "GET") {
     event.respondWith(
-      caches.match(event.request).then((cached) => {
-        if (cached) return cached;
-        return fetch(event.request)
-          .then((resp) => {
-            if (resp && resp.status === 200 && resp.type !== "opaque") {
-              const copy = resp.clone();
-              caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, copy));
-            }
-            return resp;
-          })
-          .catch(() => cached);
-      })
+      fetch(event.request)
+        .then((resp) => {
+          if (resp && resp.status === 200 && resp.type !== "opaque") {
+            const copy = resp.clone();
+            caches.open(SHELL_CACHE).then((cache) => cache.put(event.request, copy));
+          }
+          return resp;
+        })
+        .catch(() => caches.match(event.request))
     );
   }
 });
