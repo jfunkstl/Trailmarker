@@ -922,7 +922,10 @@ function openTrailDetail(trail) {
     <div class="bg-card border border-line rounded-2xl p-3.5 mt-3.5">
       <div class="flex items-center justify-between mb-1">
         <p class="font-condensed uppercase tracking-wide text-xs opacity-60">Elevation profile</p>
-        <p class="font-condensed text-sm text-pine font-semibold" id="elevationReadout">Drag to explore</p>
+        <div class="flex items-center gap-2">
+          <p class="font-condensed text-sm text-pine font-semibold" id="elevationReadout">Drag to explore</p>
+          <button id="elevationExpandBtn" class="hidden w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-xs shrink-0">⤢</button>
+        </div>
       </div>
       <div class="h-[160px]"><canvas id="elevationChart"></canvas></div>
       <p class="text-xs opacity-60 mt-1" id="elevationNote">Loading elevation data…</p>
@@ -974,6 +977,103 @@ document.getElementById("detailBack").addEventListener("click", () => {
 });
 
 let elevationChartInstance = null;
+let expandedElevationChartInstance = null;
+let lastElevationData = null; // { sampled, elevations, trailName } — reused by the expand modal
+
+function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceSetter, height) {
+  const ctx = document.getElementById(canvasId);
+  const readout = document.getElementById(readoutId);
+  const gradient = ctx.getContext("2d").createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, "rgba(27,67,50,0.45)");
+  gradient.addColorStop(1, "rgba(27,67,50,0.03)");
+
+  const crosshairPlugin = {
+    id: "crosshair",
+    afterDraw(chart) {
+      const active = chart.tooltip?._active;
+      if (!active || !active.length) return;
+      const { ctx: c } = chart;
+      const point = active[0].element;
+      const area = chart.chartArea;
+      c.save();
+      c.beginPath();
+      c.moveTo(point.x, area.top);
+      c.lineTo(point.x, area.bottom);
+      c.lineWidth = 1;
+      c.strokeStyle = "rgba(27,67,50,0.35)";
+      c.stroke();
+      c.beginPath();
+      c.arc(point.x, point.y, 5, 0, Math.PI * 2);
+      c.fillStyle = "#1B4332";
+      c.fill();
+      c.restore();
+    },
+  };
+
+  const instance = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: sampled.map((s) => s.mi.toFixed(2)),
+      datasets: [{
+        data: elevations,
+        borderColor: "#1B4332",
+        backgroundColor: gradient,
+        fill: true,
+        tension: 0.35,
+        pointRadius: 0,
+        borderWidth: 2,
+        spanGaps: true,
+      }],
+    },
+    plugins: [crosshairPlugin],
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      events: ["mousemove", "mouseout", "touchstart", "touchmove", "touchend"],
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { enabled: false },
+      },
+      scales: {
+        x: { title: { display: true, text: "miles" }, grid: { display: false } },
+        y: { title: { display: true, text: "ft elevation" } },
+      },
+      onHover: (event, elements) => {
+        if (!elements || !elements.length) {
+          readout.textContent = "Drag to explore";
+          return;
+        }
+        const idx = elements[0].index;
+        const mi = sampled[idx].mi.toFixed(1);
+        const ft = elevations[idx];
+        readout.textContent = ft == null ? `${mi} mi` : `${mi} mi · ${Math.round(ft).toLocaleString()} ft`;
+      },
+    },
+  });
+  instanceSetter(instance);
+  return instance;
+}
+
+function openElevationModal() {
+  if (!lastElevationData) return;
+  const { sampled, elevations, trailName } = lastElevationData;
+  openModal(`${trailName} — Elevation`, `
+    <div class="flex items-center justify-between mb-1">
+      <p class="font-condensed uppercase tracking-wide text-xs opacity-60">Elevation profile</p>
+      <p class="font-condensed text-sm text-pine font-semibold" id="modalElevationReadout">Drag to explore</p>
+    </div>
+    <div class="h-[46vh]"><canvas id="modalElevationChart"></canvas></div>
+  `, { mapModal: false });
+  // Reuse the same modal panel size the maps use — just force it open large
+  // immediately since a chart benefits from more room right away.
+  modalPanel.className = "bg-paper w-full h-[70vh] max-h-[70vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
+  setTimeout(() => {
+    if (expandedElevationChartInstance) expandedElevationChartInstance.destroy();
+    buildElevationChart("modalElevationChart", "modalElevationReadout", sampled, elevations, (i) => { expandedElevationChartInstance = i; }, window.innerHeight * 0.46);
+  }, 0);
+}
+
 async function loadElevationChart(trail) {
   const note = document.getElementById("elevationNote");
   try {
@@ -988,7 +1088,7 @@ async function loadElevationChart(trail) {
       cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
     }
     const totalKm = cum[cum.length - 1];
-    const SAMPLES = 12;
+    const SAMPLES = 20;
     const sampled = [];
     for (let i = 0; i < SAMPLES; i++) {
       const targetDist = (i / (SAMPLES - 1)) * totalKm;
@@ -1013,82 +1113,16 @@ async function loadElevationChart(trail) {
       }
     }
 
+    lastElevationData = { sampled, elevations, trailName: trail.name };
     if (elevationChartInstance) elevationChartInstance.destroy();
-    const ctx = document.getElementById("elevationChart");
-    const readout = document.getElementById("elevationReadout");
-    const gradient = ctx.getContext("2d").createLinearGradient(0, 0, 0, 140);
-    gradient.addColorStop(0, "rgba(27,67,50,0.45)");
-    gradient.addColorStop(1, "rgba(27,67,50,0.03)");
-
-    // Draws a vertical crosshair + dot at the currently-hovered/dragged point.
-    const crosshairPlugin = {
-      id: "crosshair",
-      afterDraw(chart) {
-        const active = chart.tooltip?._active;
-        if (!active || !active.length) return;
-        const { ctx: c } = chart;
-        const point = active[0].element;
-        const area = chart.chartArea;
-        c.save();
-        c.beginPath();
-        c.moveTo(point.x, area.top);
-        c.lineTo(point.x, area.bottom);
-        c.lineWidth = 1;
-        c.strokeStyle = "rgba(27,67,50,0.35)";
-        c.stroke();
-        c.beginPath();
-        c.arc(point.x, point.y, 5, 0, Math.PI * 2);
-        c.fillStyle = "#1B4332";
-        c.fill();
-        c.restore();
-      },
-    };
-
-    elevationChartInstance = new Chart(ctx, {
-      type: "line",
-      data: {
-        labels: sampled.map((s) => s.mi.toFixed(2)),
-        datasets: [{
-          data: elevations,
-          borderColor: "#1B4332",
-          backgroundColor: gradient,
-          fill: true,
-          tension: 0.35,
-          pointRadius: 0,
-          borderWidth: 2,
-          spanGaps: true,
-        }],
-      },
-      plugins: [crosshairPlugin],
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        events: ["mousemove", "mouseout", "touchstart", "touchmove", "touchend"],
-        interaction: { mode: "index", intersect: false },
-        plugins: {
-          legend: { display: false },
-          tooltip: { enabled: false }, // we render our own readout above the chart instead
-        },
-        scales: {
-          x: { title: { display: true, text: "miles" }, grid: { display: false } },
-          y: { title: { display: true, text: "ft elevation" } },
-        },
-        onHover: (event, elements, chart) => {
-          if (!elements || !elements.length) {
-            readout.textContent = "Drag to explore";
-            return;
-          }
-          const idx = elements[0].index;
-          const mi = sampled[idx].mi.toFixed(1);
-          const ft = elevations[idx];
-          readout.textContent = ft == null ? `${mi} mi` : `${mi} mi · ${Math.round(ft).toLocaleString()} ft`;
-        },
-      },
-    });
-    note.textContent = `Approx. ${Math.round(gainFt)} ft elevation gain, estimated from sampled points.`;
+    buildElevationChart("elevationChart", "elevationReadout", sampled, elevations, (i) => { elevationChartInstance = i; }, 160);
+    const expandBtn = document.getElementById("elevationExpandBtn");
+    expandBtn.classList.remove("hidden");
+    expandBtn.onclick = openElevationModal;
+    note.textContent = `Approx. ${Math.round(gainFt)} ft elevation gain, estimated from sampled points. Tap ⤢ to expand.`;
   } catch (err) {
     console.error(err);
-    note.textContent = "Elevation data isn't available for this trail right now.";
+    note.textContent = `Elevation data isn't available for this trail right now. (${err.message || err})`;
   }
 }
 
