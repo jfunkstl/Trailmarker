@@ -988,7 +988,7 @@ async function loadElevationChart(trail) {
       cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
     }
     const totalKm = cum[cum.length - 1];
-    const SAMPLES = 20;
+    const SAMPLES = 12;
     const sampled = [];
     for (let i = 0; i < SAMPLES; i++) {
       const targetDist = (i / (SAMPLES - 1)) * totalKm;
