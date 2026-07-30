@@ -554,8 +554,9 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
     const input = document.getElementById("query");
     input.placeholder = searchMode === "city" ? "Search a city (e.g. Boulder)"
       : searchMode === "parks" ? "Search park name (optional)"
+      : searchMode === "reccons" ? "Search area name (optional)"
       : "Search trail name (optional)";
-    document.getElementById("difficultyFilters").classList.toggle("hidden", searchMode === "parks");
+    document.getElementById("difficultyFilters").classList.toggle("hidden", searchMode === "parks" || searchMode === "reccons");
   });
 });
 
@@ -621,6 +622,39 @@ function renderSearchResults(trails) {
   });
 }
 
+function renderRecConsResults(areas) {
+  const el = document.getElementById("results");
+  if (areas.length === 0) {
+    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">No National Forest or BLM areas matched. Try a different state or search term.</div>`;
+    return;
+  }
+  el.innerHTML = areas.map((a, i) => `
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(a.state)}</p>
+      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-rc-detail-idx="${i}">${escapeHtml(a.name)}</h3>
+      <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(a.kind)}</span></div>
+      <div class="flex gap-2 mt-3 flex-wrap">
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-rc-map-idx="${i}">Map</button>
+        <button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-rc-save-idx="${i}">Save</button>
+      </div>
+      <a class="block text-sm text-pine underline mt-2" href="${a.osm_url}" target="_blank" rel="noopener">View on OpenStreetMap →</a>
+    </div>
+  `).join("");
+
+  el.querySelectorAll("[data-rc-detail-idx]").forEach((el2) => {
+    el2.addEventListener("click", () => openParkDetail(areas[Number(el2.dataset.rcDetailIdx)]));
+  });
+  el.querySelectorAll("[data-rc-map-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => openParkMapModal(areas[Number(btn.dataset.rcMapIdx)]));
+  });
+  el.querySelectorAll("[data-rc-save-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const a = areas[Number(btn.dataset.rcSaveIdx)];
+      saveToWishlist({ name: a.name, state: a.state, distance_km: 0, difficulty: a.kind, geometry: null, lat: a.lat, lon: a.lon, osm_url: a.osm_url });
+    });
+  });
+}
+
 function renderParkResults(parks) {
   const el = document.getElementById("results");
   if (parks.length === 0) {
@@ -675,6 +709,7 @@ function openParkDetail(park) {
       <div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div>
       <p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>
     </div>
+    <div id="parkTrailsSection"></div>
     <div class="flex gap-2 mt-3.5 flex-wrap">
       <button id="detailSaveBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Save</button>
     </div>
@@ -688,6 +723,7 @@ function openParkDetail(park) {
   if (park.kind !== "City / Local Park") {
     loadParkAlerts(park);
   }
+  loadTrailsNearPark(park);
   setTimeout(() => {
     const map = L.map("detailMiniMap", {
       attributionControl: false, zoomControl: false, dragging: false,
@@ -697,6 +733,35 @@ function openParkDetail(park) {
     L.marker([park.lat, park.lon]).addTo(map);
     document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openParkMapModal(park));
   }, 0);
+}
+
+async function loadTrailsNearPark(park) {
+  const section = document.getElementById("parkTrailsSection");
+  if (!section) return;
+  try {
+    const params = new URLSearchParams({ state: park.state, lat: park.lat, lon: park.lon });
+    const resp = await fetch(`/api/trails?${params.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok || !data.trails || data.trails.length === 0) return;
+
+    const trails = data.trails.slice(0, 15);
+    section.innerHTML = `
+      <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mt-4 mb-2">Trails in this area</p>
+      <div class="flex flex-col gap-2">
+        ${trails.map((t, i) => `
+          <button data-park-trail-idx="${i}" class="text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition">
+            <span class="font-condensed font-semibold">${escapeHtml(t.name)}</span>
+            <span class="text-xs opacity-60 block">${(t.distance_km * 0.621371).toFixed(1)} mi · ${escapeHtml(t.difficulty)}</span>
+          </button>
+        `).join("")}
+      </div>
+    `;
+    section.querySelectorAll("[data-park-trail-idx]").forEach((btn) => {
+      btn.addEventListener("click", () => openTrailDetail(trails[Number(btn.dataset.parkTrailIdx)]));
+    });
+  } catch (err) {
+    console.error("Trails-near-park lookup failed:", err);
+  }
 }
 
 async function loadParkAlerts(park) {
@@ -742,6 +807,32 @@ function openTrailMapModal(trail) {
 // Tries an OSM-authored description first, then a Wikipedia summary for
 // well-known trails, and otherwise leaves the auto-generated fallback
 // (already shown) in place.
+async function loadBlmInfo(trail) {
+  const box = document.getElementById("blmInfoBox");
+  if (!box) return;
+  try {
+    const resp = await fetch(`/api/blm-trail-info?name=${encodeURIComponent(trail.name)}&state=${encodeURIComponent(trail.state || "")}`);
+    const data = await resp.json();
+    if (!data.available) return;
+
+    const rows = [];
+    if (data.designation) rows.push(escapeHtml(data.designation));
+    if (data.allowedModes) rows.push(escapeHtml(data.allowedModes.replace(/_/g, " ")));
+    if (data.surface) rows.push(`Surface: ${escapeHtml(data.surface.replace(/_/g, " "))}`);
+    if (data.miles) rows.push(`${data.miles.toFixed(1)} mi (official)`);
+    if (rows.length === 0) return;
+
+    box.innerHTML = `
+      <div class="bg-card border border-line rounded-2xl p-3.5 my-3">
+        <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1.5">Official BLM trail data</p>
+        <p class="text-sm">${rows.join(" · ")}</p>
+      </div>
+    `;
+  } catch (err) {
+    console.error("BLM info lookup failed:", err);
+  }
+}
+
 async function loadUsfsInfo(trail) {
   const box = document.getElementById("usfsInfoBox");
   if (!box) return;
@@ -824,6 +915,7 @@ function openTrailDetail(trail) {
     ${factsHtml}
     <p class="leading-relaxed my-3" id="trailDescriptionText">${buildTrailDescription(trail)}</p>
     <div id="usfsInfoBox"></div>
+    <div id="blmInfoBox"></div>
     <div class="my-3.5">
       ${hasGeometry ? `<div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div><p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>` : `<p class="text-center text-sm opacity-60 py-8">No mapped path available.</p>`}
     </div>
@@ -847,7 +939,10 @@ function openTrailDetail(trail) {
   }
   document.getElementById("trailDetailOverlay").classList.remove("hidden");
   loadRichDescription(trail);
-  if (hasGeometry) loadUsfsInfo(trail);
+  if (hasGeometry) {
+    loadUsfsInfo(trail);
+    loadBlmInfo(trail);
+  }
 
   if (hasGeometry) {
     setTimeout(() => {
@@ -976,6 +1071,31 @@ async function runSearch() {
         ? data.note
         : `${data.parks.length} park${data.parks.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}.`;
       renderParkResults(lastResults);
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Is it running?";
+      console.error(err);
+    } finally {
+      searchBtn.disabled = false;
+    }
+    return;
+  }
+
+  if (searchMode === "reccons") {
+    status.textContent = `Searching National Forest and BLM lands in ${state}…`;
+    document.getElementById("results").innerHTML = "";
+    searchBtn.disabled = true;
+    try {
+      const params = new URLSearchParams({ state });
+      if (q) params.set("q", q);
+      const res = await fetch(`/api/reccons?${params.toString()}`);
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = `Error: ${data.error || "something went wrong"}`;
+        return;
+      }
+      lastResults = data.areas;
+      status.textContent = `${data.areas.length} area${data.areas.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}.`;
+      renderRecConsResults(lastResults);
     } catch (err) {
       status.textContent = "Couldn't reach the server. Is it running?";
       console.error(err);
