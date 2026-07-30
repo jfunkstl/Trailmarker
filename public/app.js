@@ -920,8 +920,11 @@ function openTrailDetail(trail) {
       ${hasGeometry ? `<div class="relative rounded-2xl overflow-hidden cursor-pointer border border-line"><div class="w-full h-[160px] bg-card pointer-events-none" id="detailMiniMap"></div><div class="absolute inset-0 z-[5] cursor-pointer" id="detailMiniMapOverlay"></div></div><p class="text-xs opacity-60 mt-1 text-center">Tap map to expand</p>` : `<p class="text-center text-sm opacity-60 py-8">No mapped path available.</p>`}
     </div>
     <div class="bg-card border border-line rounded-2xl p-3.5 mt-3.5">
-      <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1 block">Elevation profile</p>
-      <canvas id="elevationChart" height="140"></canvas>
+      <div class="flex items-center justify-between mb-1">
+        <p class="font-condensed uppercase tracking-wide text-xs opacity-60">Elevation profile</p>
+        <p class="font-condensed text-sm text-pine font-semibold" id="elevationReadout">Drag to explore</p>
+      </div>
+      <div class="h-[160px]"><canvas id="elevationChart"></canvas></div>
       <p class="text-xs opacity-60 mt-1" id="elevationNote">Loading elevation data…</p>
     </div>
     <div class="flex gap-2 mt-3.5 flex-wrap">
@@ -1012,26 +1015,73 @@ async function loadElevationChart(trail) {
 
     if (elevationChartInstance) elevationChartInstance.destroy();
     const ctx = document.getElementById("elevationChart");
+    const readout = document.getElementById("elevationReadout");
+    const gradient = ctx.getContext("2d").createLinearGradient(0, 0, 0, 140);
+    gradient.addColorStop(0, "rgba(27,67,50,0.45)");
+    gradient.addColorStop(1, "rgba(27,67,50,0.03)");
+
+    // Draws a vertical crosshair + dot at the currently-hovered/dragged point.
+    const crosshairPlugin = {
+      id: "crosshair",
+      afterDraw(chart) {
+        const active = chart.tooltip?._active;
+        if (!active || !active.length) return;
+        const { ctx: c } = chart;
+        const point = active[0].element;
+        const area = chart.chartArea;
+        c.save();
+        c.beginPath();
+        c.moveTo(point.x, area.top);
+        c.lineTo(point.x, area.bottom);
+        c.lineWidth = 1;
+        c.strokeStyle = "rgba(27,67,50,0.35)";
+        c.stroke();
+        c.beginPath();
+        c.arc(point.x, point.y, 5, 0, Math.PI * 2);
+        c.fillStyle = "#1B4332";
+        c.fill();
+        c.restore();
+      },
+    };
+
     elevationChartInstance = new Chart(ctx, {
       type: "line",
       data: {
-        labels: sampled.map((s) => s.mi.toFixed(1)),
+        labels: sampled.map((s) => s.mi.toFixed(2)),
         datasets: [{
           data: elevations,
           borderColor: "#1B4332",
-          backgroundColor: "rgba(27,67,50,0.12)",
+          backgroundColor: gradient,
           fill: true,
-          tension: 0.3,
+          tension: 0.35,
           pointRadius: 0,
+          borderWidth: 2,
           spanGaps: true,
         }],
       },
+      plugins: [crosshairPlugin],
       options: {
         responsive: true,
-        plugins: { legend: { display: false } },
+        maintainAspectRatio: false,
+        events: ["mousemove", "mouseout", "touchstart", "touchmove", "touchend"],
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: { enabled: false }, // we render our own readout above the chart instead
+        },
         scales: {
-          x: { title: { display: true, text: "miles" } },
+          x: { title: { display: true, text: "miles" }, grid: { display: false } },
           y: { title: { display: true, text: "ft elevation" } },
+        },
+        onHover: (event, elements, chart) => {
+          if (!elements || !elements.length) {
+            readout.textContent = "Drag to explore";
+            return;
+          }
+          const idx = elements[0].index;
+          const mi = sampled[idx].mi.toFixed(1);
+          const ft = elevations[idx];
+          readout.textContent = ft == null ? `${mi} mi` : `${mi} mi · ${Math.round(ft).toLocaleString()} ft`;
         },
       },
     });
