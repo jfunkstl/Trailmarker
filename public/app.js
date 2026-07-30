@@ -965,6 +965,8 @@ function openTrailDetail(trail) {
       });
       if (bounds.length) map.fitBounds(bounds, { padding: [10, 10] });
       document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openTrailMapModal(trail));
+      detailMiniMapInstance = map;
+      detailScrubMarker.marker = null;
     }, 0);
     loadElevationChart(trail);
   } else {
@@ -978,9 +980,33 @@ document.getElementById("detailBack").addEventListener("click", () => {
 
 let elevationChartInstance = null;
 let expandedElevationChartInstance = null;
-let lastElevationData = null; // { sampled, elevations, trailName } — reused by the expand modal
+let lastElevationData = null; // { sampled, elevations, trailName, geometry, lat, lon } — reused by the expand modal
+let detailMiniMapInstance = null;
+const detailScrubMarker = { marker: null };
 
-function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceSetter, height) {
+// Small circular marker using the app icon, used to show where you are along
+// the trail as you drag your finger across the elevation chart.
+const scrubDivIcon = L.divIcon({
+  html: `<img src="icons/icon-192.png" style="width:28px;height:28px;border-radius:50%;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);object-fit:cover;display:block;" />`,
+  className: "",
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+});
+
+function updateScrubMarker(map, markerRef, point) {
+  if (!map) return;
+  if (!point) {
+    if (markerRef.marker) { map.removeLayer(markerRef.marker); markerRef.marker = null; }
+    return;
+  }
+  if (!markerRef.marker) {
+    markerRef.marker = L.marker(point, { icon: scrubDivIcon, interactive: false }).addTo(map);
+  } else {
+    markerRef.marker.setLatLng(point);
+  }
+}
+
+function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceSetter, height, onScrub) {
   const ctx = document.getElementById(canvasId);
   const readout = document.getElementById(readoutId);
   const gradient = ctx.getContext("2d").createLinearGradient(0, 0, 0, height);
@@ -1042,12 +1068,14 @@ function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceS
       onHover: (event, elements) => {
         if (!elements || !elements.length) {
           readout.textContent = "Drag to explore";
+          if (onScrub) onScrub(null);
           return;
         }
         const idx = elements[0].index;
         const mi = sampled[idx].mi.toFixed(1);
         const ft = elevations[idx];
         readout.textContent = ft == null ? `${mi} mi` : `${mi} mi · ${Math.round(ft).toLocaleString()} ft`;
+        if (onScrub) onScrub(sampled[idx].point);
       },
     },
   });
@@ -1057,20 +1085,37 @@ function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceS
 
 function openElevationModal() {
   if (!lastElevationData) return;
-  const { sampled, elevations, trailName } = lastElevationData;
-  openModal(`${trailName} — Elevation`, `
+  const { sampled, elevations, trailName, geometry, lat, lon } = lastElevationData;
+  openModal(`${trailName}`, `
+    <div class="rounded-2xl overflow-hidden border border-line mb-3">
+      <div id="modalElevationMap" class="w-full h-[30vh]"></div>
+    </div>
     <div class="flex items-center justify-between mb-1">
       <p class="font-condensed uppercase tracking-wide text-xs opacity-60">Elevation profile</p>
       <p class="font-condensed text-sm text-pine font-semibold" id="modalElevationReadout">Drag to explore</p>
     </div>
-    <div class="h-[46vh]"><canvas id="modalElevationChart"></canvas></div>
+    <div class="h-[30vh]"><canvas id="modalElevationChart"></canvas></div>
   `, { mapModal: false });
-  // Reuse the same modal panel size the maps use — just force it open large
-  // immediately since a chart benefits from more room right away.
-  modalPanel.className = "bg-paper w-full h-[70vh] max-h-[70vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
+  // Force this one open large immediately — a split map+chart view benefits
+  // from more room right away rather than requiring a separate maximize tap.
+  modalPanel.className = "bg-paper w-full h-[88vh] max-h-[88vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
+
   setTimeout(() => {
+    const map = L.map("modalElevationMap", { attributionControl: false });
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    const bounds = [];
+    (geometry || []).forEach((seg) => {
+      if (seg.length < 2) return;
+      L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+      seg.forEach((pt) => bounds.push(pt));
+    });
+    if (bounds.length) map.fitBounds(bounds, { padding: [16, 16] });
+    else if (lat != null) map.setView([lat, lon], 12);
+
+    const modalScrubMarker = { marker: null };
     if (expandedElevationChartInstance) expandedElevationChartInstance.destroy();
-    buildElevationChart("modalElevationChart", "modalElevationReadout", sampled, elevations, (i) => { expandedElevationChartInstance = i; }, window.innerHeight * 0.46);
+    buildElevationChart("modalElevationChart", "modalElevationReadout", sampled, elevations, (i) => { expandedElevationChartInstance = i; }, window.innerHeight * 0.3,
+      (point) => updateScrubMarker(map, modalScrubMarker, point));
   }, 0);
 }
 
@@ -1113,9 +1158,10 @@ async function loadElevationChart(trail) {
       }
     }
 
-    lastElevationData = { sampled, elevations, trailName: trail.name };
+    lastElevationData = { sampled, elevations, trailName: trail.name, geometry: trail.geometry, lat: trail.lat, lon: trail.lon };
     if (elevationChartInstance) elevationChartInstance.destroy();
-    buildElevationChart("elevationChart", "elevationReadout", sampled, elevations, (i) => { elevationChartInstance = i; }, 160);
+    buildElevationChart("elevationChart", "elevationReadout", sampled, elevations, (i) => { elevationChartInstance = i; }, 160,
+      (point) => updateScrubMarker(detailMiniMapInstance, detailScrubMarker, point));
     const expandBtn = document.getElementById("elevationExpandBtn");
     expandBtn.classList.remove("hidden");
     expandBtn.onclick = openElevationModal;
