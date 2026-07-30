@@ -74,24 +74,25 @@ app.get("/api/trails", async (req, res) => {
   const stateInput = (req.query.state || "").trim();
   const q = (req.query.q || "").trim();
   const near = (req.query.near || "").trim();
+  const directLat = parseFloat(req.query.lat);
+  const directLon = parseFloat(req.query.lon);
+  const hasDirectPoint = !Number.isNaN(directLat) && !Number.isNaN(directLon);
   const iso = STATE_ISO[stateInput] || STATE_ISO[stateInput.toLowerCase()];
 
   if (!iso) {
     return res.status(400).json({ error: "Unknown or missing state. Send a full state name (California) or two-letter code (CA)." });
   }
 
-  const cacheKey = `${iso}::${q.toLowerCase()}::${near.toLowerCase()}`;
+  const cacheKey = `${iso}::${q.toLowerCase()}::${near.toLowerCase()}::${hasDirectPoint ? `${directLat},${directLon}` : ""}`;
   const cached = cache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.json({ trails: cached.data, cached: true });
   }
 
-  // If a city/place was given, geocode it (scoped to the chosen state) via
-  // Nominatim, then search a radius around that point instead of the whole
-  // state. This lets the same search box work for either a trail name or a
-  // place name.
-  let centerPoint = null;
-  if (near) {
+  // If we were given exact coordinates directly (e.g. "trails near this
+  // park"), skip geocoding entirely and use them as-is.
+  let centerPoint = hasDirectPoint ? { lat: directLat, lon: directLon } : null;
+  if (near && !centerPoint) {
     try {
       const geoUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(`${near}, ${stateInput}, USA`)}`;
       const geoResp = await fetch(geoUrl, {
@@ -394,6 +395,66 @@ app.get("/api/park-info", async (req, res) => {
 // Official USFS trail data (National Forest System Trails layer) — gives a
 // real trail number, surface type, managing forest, and hiker-access status
 // for trails inside National Forests. Free, no key, no signup.
+// National Forests, BLM lands, and wildlife refuges/wilderness areas —
+// distinct from /api/parks (which covers NPS units and city/local parks).
+// Kept to one simple query, same lesson learned from the earlier Parks bug:
+// compound multi-clause Overpass queries over a whole state are prone to
+// silently timing out.
+app.get("/api/reccons", async (req, res) => {
+  const stateInput = (req.query.state || "").trim();
+  const q = (req.query.q || "").trim();
+  const iso = STATE_ISO[stateInput] || STATE_ISO[stateInput.toLowerCase()];
+
+  if (!iso) {
+    return res.status(400).json({ error: "Unknown or missing state. Send a full state name (California) or two-letter code (CA)." });
+  }
+
+  const cacheKey = `reccons::${iso}::${q.toLowerCase()}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ areas: cached.data, cached: true });
+  }
+
+  const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
+  const query = `
+    [out:json][timeout:30];
+    area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+    (
+      way["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
+      relation["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
+      way["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
+      relation["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
+    );
+    out tags center 150;
+  `.trim();
+
+  try {
+    const data = await runOverpassQuery(query);
+    const seen = new Map();
+    (data.elements || []).forEach((el) => {
+      const name = el.tags && el.tags.name;
+      const center = el.center;
+      if (!name || !center || seen.has(name)) return;
+      const operator = el.tags.operator || "";
+      seen.set(name, {
+        name,
+        state: stateInput,
+        kind: /forest service/i.test(operator) ? "National Forest" : /bureau of land management/i.test(operator) ? "BLM Land" : "Conservation Area",
+        lat: center.lat,
+        lon: center.lon,
+        osm_description: el.tags.description || null,
+        osm_url: `https://www.openstreetmap.org/?mlat=${center.lat}&mlon=${center.lon}#map=12/${center.lat}/${center.lon}`,
+      });
+    });
+    const areas = Array.from(seen.values()).slice(0, 150);
+    cache.set(cacheKey, { data: areas, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ areas, cached: false });
+  } catch (err) {
+    console.error("Rec/conservation lookup failed:", err.message || err);
+    res.status(502).json({ error: "Overpass is busy right now — try again in a minute." });
+  }
+});
+
 app.get("/api/usfs-trail-info", async (req, res) => {
   const name = (req.query.name || "").trim();
   const lat = parseFloat(req.query.lat);
@@ -433,6 +494,48 @@ app.get("/api/usfs-trail-info", async (req, res) => {
     });
   } catch (err) {
     console.error("USFS trail lookup failed:", err.message || err);
+    res.json({ available: false });
+  }
+});
+
+// Official BLM trail data (National GTLF Trails layer). This layer actually
+// has a state field (ADMIN_ST), so unlike USFS we can filter by state
+// directly instead of needing a geometry envelope.
+app.get("/api/blm-trail-info", async (req, res) => {
+  const name = (req.query.name || "").trim();
+  const stateInput = (req.query.state || "").trim();
+  if (!name) return res.json({ available: false });
+
+  const iso = STATE_ISO[stateInput] || STATE_ISO[stateInput.toLowerCase()];
+  const stateAbbr = iso ? iso.split("-")[1] : null;
+
+  const safeName = name.replace(/'/g, "''").slice(0, 80);
+  let where = `UPPER(ROUTE_PRMRY_NM) LIKE UPPER('%${safeName}%')`;
+  if (stateAbbr) where += ` AND ADMIN_ST='${stateAbbr}'`;
+
+  const url = "https://gis.blm.gov/arcgis/rest/services/transportation/BLM_Natl_GTLF_Public_Display/MapServer/7/query"
+    + `?where=${encodeURIComponent(where)}&outFields=*&f=json`;
+
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) return res.json({ available: false });
+    const data = await resp.json();
+    const features = data.features || [];
+    if (features.length === 0) return res.json({ available: false });
+
+    const first = features[0].attributes;
+    let totalMiles = 0;
+    features.forEach((f) => { totalMiles += Number(f.attributes.GIS_MILES) || 0; });
+
+    res.json({
+      available: true,
+      surface: first.OBSRVE_SRFCE_TYPE || null,
+      allowedModes: first.PLAN_ALLOW_MODE_TRNSPRT || null,
+      designation: first.ROUTE_SPCL_DSGNTN_TYPE || null,
+      miles: totalMiles > 0 ? Math.round(totalMiles * 10) / 10 : null,
+    });
+  } catch (err) {
+    console.error("BLM trail lookup failed:", err.message || err);
     res.json({ available: false });
   }
 });
