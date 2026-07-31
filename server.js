@@ -173,6 +173,8 @@ app.get("/api/trails", async (req, res) => {
     const elements = data.elements || [];
 
     const byName = new Map();
+    const superRelationsToResolve = []; // { id, name } — relations with no directly-resolvable geometry
+
     for (const el of elements) {
       if (!el.tags?.name) continue;
       const name = el.tags.name;
@@ -188,7 +190,17 @@ app.get("/api/trails", async (req, res) => {
       } else if (el.geometry && el.geometry.length >= 2) {
         segs.push(el.geometry.filter((p) => p));
       }
-      if (segs.length === 0) continue;
+
+      if (segs.length === 0) {
+        // A relation with no directly-resolvable geometry is very likely a
+        // "super-relation" — a master relation (e.g. the Pacific Crest Trail
+        // as a whole) whose direct members are themselves relations (one per
+        // state segment), not ways. A plain query can't see through that
+        // extra level, so we queue it for a targeted recursive follow-up
+        // instead of silently dropping it.
+        if (el.type === "relation" && q) superRelationsToResolve.push({ id: el.id, name });
+        continue;
+      }
 
       const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
       const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
@@ -207,6 +219,32 @@ app.get("/api/trails", async (req, res) => {
           tags: el.tags,
           segmentsGeom: segCoordsList,
         });
+      }
+    }
+
+    // Resolve super-relations: recurse all the way down to the actual way
+    // geometries, however many levels of nested sub-relations there are.
+    for (const { id, name } of superRelationsToResolve.slice(0, 3)) { // cap: at most a few per search
+      if (byName.has(name)) continue;
+      try {
+        const recurseQuery = `[out:json][timeout:60];relation(${id});(._;>>;);out geom;`.trim();
+        const recurseData = await runOverpassQuery(recurseQuery);
+        const segCoordsList = (recurseData.elements || [])
+          .filter((e) => e.type === "way" && e.geometry && e.geometry.length >= 2)
+          .map((e) => e.geometry.filter((p) => p).map((p) => [p.lat, p.lon]));
+        if (segCoordsList.length === 0) continue;
+        const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+        byName.set(name, {
+          name,
+          distance_km: lenKm,
+          segments: segCoordsList.length,
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          tags: {},
+          segmentsGeom: segCoordsList,
+        });
+      } catch (recurseErr) {
+        console.error(`Super-relation resolution failed for "${name}":`, recurseErr.message || recurseErr);
       }
     }
 
@@ -355,6 +393,171 @@ async function runOverpassQuery(overpassQuery) {
   }
   throw new Error(lastError || "All Overpass mirrors failed");
 }
+
+// Nationwide search for multi-state, long-distance trails (Appalachian Trail,
+// Pacific Crest Trail, Continental Divide Trail, etc.) — deliberately NOT
+// bounded to a state, since that's exactly the problem: these trails span
+// many states and get fragmented into per-state sections otherwise. This
+// requires a specific name (searching all of OSM with no name filter at all
+// would be far too slow/heavy).
+app.get("/api/usa-trails", async (req, res) => {
+  const q = (req.query.q || "").trim();
+  if (!q || q.length < 3) {
+    return res.status(400).json({ error: "Enter at least 3 characters of a trail name to search nationwide." });
+  }
+
+  const cacheKey = `usa::${q.toLowerCase()}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ trails: cached.data, cached: true });
+  }
+
+  const nameFilter = `["name"~"${escapeRegex(q)}",i]`;
+  const query = `
+    [out:json][timeout:60];
+    (
+      relation["route"~"^(hiking|foot)$"]${nameFilter};
+    );
+    out tags geom;
+  `.trim();
+
+  try {
+    const data = await runOverpassQuery(query);
+    const elements = data.elements || [];
+    const byName = new Map();
+    const superRelationsToResolve = [];
+
+    for (const el of elements) {
+      if (!el.tags?.name) continue;
+      const name = el.tags.name;
+      let segs = [];
+      if (Array.isArray(el.members)) {
+        el.members.forEach((m) => {
+          if (m.geometry && m.geometry.length >= 2) segs.push(m.geometry.filter((p) => p));
+        });
+      }
+      if (segs.length === 0) {
+        superRelationsToResolve.push({ id: el.id, name });
+        continue;
+      }
+      const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
+      const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
+      byName.set(name, {
+        name, distance_km: lenKm, segments: segs.length,
+        lat: segs[0][0].lat, lon: segs[0][0].lon, tags: el.tags, segmentsGeom: segCoordsList,
+      });
+    }
+
+    // A name search this specific should only ever match one or two relations,
+    // so resolve all of them recursively (no need for the small cap used in
+    // the per-state search, which has to guard against broad browsing).
+    for (const { id, name } of superRelationsToResolve) {
+      if (byName.has(name)) continue;
+      try {
+        const recurseData = await runOverpassQuery(`[out:json][timeout:90];relation(${id});(._;>>;);out geom;`);
+        const segCoordsList = (recurseData.elements || [])
+          .filter((e) => e.type === "way" && e.geometry && e.geometry.length >= 2)
+          .map((e) => e.geometry.filter((p) => p).map((p) => [p.lat, p.lon]));
+        if (segCoordsList.length === 0) continue;
+        const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+        byName.set(name, {
+          name, distance_km: lenKm, segments: segCoordsList.length,
+          lat: segCoordsList[0][0][0], lon: segCoordsList[0][0][1], tags: {}, segmentsGeom: segCoordsList,
+        });
+      } catch (recurseErr) {
+        console.error(`USA trail super-relation resolution failed for "${name}":`, recurseErr.message || recurseErr);
+      }
+    }
+
+    // Also check NPS and USGS's national trail layers, same as the per-state
+    // search does — these are already nationwide/unbounded by design.
+    try {
+      const npsWhere = `UPPER(TRLNAME) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%') OR UPPER(TRLALTNAME) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%')`;
+      const npsUrl = "https://mapservices.nps.gov/arcgis/rest/services/NationalDatasets/NPS_Public_Trails/FeatureServer/0/query"
+        + `?where=${encodeURIComponent(npsWhere)}&outFields=TRLNAME,TRLALTNAME,TRLSURFACE,UNITNAME&f=geojson`;
+      const npsResp = await fetch(npsUrl, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+      if (npsResp.ok) {
+        const npsData = await npsResp.json();
+        (npsData.features || []).forEach((f) => {
+          const name = f.properties.TRLNAME || f.properties.TRLALTNAME;
+          if (!name || byName.has(name)) return;
+          const geom = f.geometry;
+          if (!geom) return;
+          const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+          const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+          if (segCoordsList.length === 0) return;
+          const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+          byName.set(name, {
+            name, distance_km: lenKm, segments: segCoordsList.length,
+            lat: segCoordsList[0][0][0], lon: segCoordsList[0][0][1],
+            tags: { surface: f.properties.TRLSURFACE || null, description: f.properties.UNITNAME ? `Official NPS trail in ${f.properties.UNITNAME}.` : null },
+            segmentsGeom: segCoordsList,
+          });
+        });
+      }
+    } catch (npsErr) {
+      console.error("NPS nationwide merge failed:", npsErr.message || npsErr);
+    }
+
+    try {
+      const usgsWhere = `UPPER(NAME) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%')`;
+      const usgsUrl = "https://carto.nationalmap.gov/arcgis/rest/services/transportation/MapServer/11/query"
+        + `?where=${encodeURIComponent(usgsWhere)}&outFields=NAME&inSR=4326&f=geojson`;
+      const usgsResp = await fetch(usgsUrl, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+      if (usgsResp.ok) {
+        const usgsData = await usgsResp.json();
+        (usgsData.features || []).forEach((f) => {
+          const name = f.properties.NAME;
+          if (!name || byName.has(name)) return;
+          const geom = f.geometry;
+          if (!geom) return;
+          const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+          const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+          if (segCoordsList.length === 0) return;
+          const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+          byName.set(name, {
+            name, distance_km: lenKm, segments: segCoordsList.length,
+            lat: segCoordsList[0][0][0], lon: segCoordsList[0][0][1],
+            tags: { surface: null, description: "From USGS's National Trails dataset, aggregated from federal, state, and local sources." },
+            segmentsGeom: segCoordsList,
+          });
+        });
+      }
+    } catch (usgsErr) {
+      console.error("USGS nationwide merge failed:", usgsErr.message || usgsErr);
+    }
+
+    const MAX_POINTS_PER_TRAIL = 600; // a bit higher here since these are often very long trails
+    const trails = Array.from(byName.values())
+      .filter((t) => t.distance_km > 0.5)
+      .map((t) => {
+        const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
+        const perSegBudget = Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL / t.segmentsGeom.length));
+        const geometry = totalPoints <= MAX_POINTS_PER_TRAIL ? t.segmentsGeom : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
+        return {
+          name: t.name,
+          state: "USA",
+          distance_km: Math.round(t.distance_km * 10) / 10,
+          difficulty: difficultyFromTags(t.tags),
+          surface: t.tags.surface || null,
+          segments: t.segments,
+          lat: t.lat,
+          lon: t.lon,
+          geometry,
+          osm_description: t.tags.description || null,
+          osm_url: `https://www.openstreetmap.org/?mlat=${t.lat}&mlon=${t.lon}#map=6/${t.lat}/${t.lon}`,
+        };
+      })
+      .sort((a, b) => b.distance_km - a.distance_km)
+      .slice(0, 20);
+
+    cache.set(cacheKey, { data: trails, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ trails, cached: false });
+  } catch (err) {
+    console.error("USA trails search failed:", err.message || err);
+    res.status(502).json({ error: "Overpass is busy right now — try again in a minute." });
+  }
+});
 
 app.get("/api/parks", async (req, res) => {
   const stateInput = (req.query.state || "").trim();
