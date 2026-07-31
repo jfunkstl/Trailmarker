@@ -251,6 +251,41 @@ app.get("/api/trails", async (req, res) => {
         console.error("NPS trails merge failed:", npsErr.message || npsErr);
         // Not fatal — OSM results still get returned below.
       }
+
+      // USGS's own "National Trails" layer — an aggregated dataset pulled
+      // from 50+ federal/state/local sources, explicitly including National
+      // Scenic Trails and other long-distance routes that OSM often maps
+      // inconsistently (or as nested route relations we can't fully resolve).
+      try {
+        const usgsWhere = `UPPER(NAME) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%')`;
+        const usgsUrl = "https://carto.nationalmap.gov/arcgis/rest/services/transportation/MapServer/11/query"
+          + `?where=${encodeURIComponent(usgsWhere)}&outFields=NAME&inSR=4326&f=geojson`;
+        const usgsResp = await fetch(usgsUrl, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+        if (usgsResp.ok) {
+          const usgsData = await usgsResp.json();
+          (usgsData.features || []).forEach((f) => {
+            const name = f.properties.NAME;
+            if (!name || byName.has(name)) return;
+            const geom = f.geometry;
+            if (!geom) return;
+            const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+            const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+            if (segCoordsList.length === 0) return;
+            const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+            byName.set(name, {
+              name,
+              distance_km: lenKm,
+              segments: segCoordsList.length,
+              lat: segCoordsList[0][0][0],
+              lon: segCoordsList[0][0][1],
+              tags: { surface: null, description: "From USGS's National Trails dataset, aggregated from federal, state, and local sources." },
+              segmentsGeom: segCoordsList,
+            });
+          });
+        }
+      } catch (usgsErr) {
+        console.error("USGS National Trails merge failed:", usgsErr.message || usgsErr);
+      }
     }
 
     const MAX_POINTS_PER_TRAIL = 400;
