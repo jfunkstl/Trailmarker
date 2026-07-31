@@ -555,8 +555,10 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
     input.placeholder = searchMode === "city" ? "Search a city (e.g. Boulder)"
       : searchMode === "parks" ? "Search park name (optional)"
       : searchMode === "reccons" ? "Search area name (optional)"
+      : searchMode === "usa" ? "Search trail name (e.g. Appalachian Trail)"
       : "Search trail name (optional)";
-    document.getElementById("difficultyFilters").classList.toggle("hidden", searchMode === "parks" || searchMode === "reccons");
+    document.getElementById("difficultyFilters").classList.toggle("hidden", searchMode === "parks" || searchMode === "reccons" || searchMode === "usa");
+    document.getElementById("state").classList.toggle("hidden", searchMode === "usa");
   });
 });
 
@@ -1226,6 +1228,33 @@ async function runSearch() {
       lastResults = data.areas;
       status.textContent = `${data.areas.length} area${data.areas.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}.`;
       renderRecConsResults(lastResults);
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Is it running?";
+      console.error(err);
+    } finally {
+      searchBtn.disabled = false;
+    }
+    return;
+  }
+
+  if (searchMode === "usa") {
+    if (!q || q.length < 3) {
+      status.textContent = "Enter at least 3 characters of a trail name (e.g. Appalachian Trail).";
+      return;
+    }
+    status.textContent = `Searching nationwide for "${q}"…`;
+    document.getElementById("results").innerHTML = "";
+    searchBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/usa-trails?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = `Error: ${data.error || "something went wrong"}`;
+        return;
+      }
+      lastResults = data.trails;
+      status.textContent = `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} found nationwide${data.cached ? " (cached)" : ""}.`;
+      renderSearchResults(lastResults);
     } catch (err) {
       status.textContent = "Couldn't reach the server. Is it running?";
       console.error(err);
