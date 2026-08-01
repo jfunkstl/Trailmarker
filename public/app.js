@@ -384,7 +384,7 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 // another saved trail as an extra piece. One shared engine avoids having to
 // keep two copies of this logic in sync.
 function makeEditor(map) {
-  return { map, segments: [], mode: "pencil", polylineLayer: null };
+  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map) };
 }
 
 function editorRedraw(editor) {
@@ -393,6 +393,21 @@ function editorRedraw(editor) {
   } else {
     editor.polylineLayer.setLatLngs(editor.segments);
   }
+  // Small visible dot at every point, Google-Maps-measure-tool style — makes
+  // it clear exactly where each tap landed and where segment breaks are.
+  editor.markerGroup.clearLayers();
+  editor.segments.forEach((seg) => {
+    seg.forEach((p, i) => {
+      const isEndpoint = i === 0 || i === seg.length - 1;
+      L.circleMarker(p, {
+        radius: isEndpoint ? 6 : 4,
+        color: "#ffffff",
+        weight: 2,
+        fillColor: "#1B4332",
+        fillOpacity: 1,
+      }).addTo(editor.markerGroup);
+    });
+  });
 }
 
 function editorClick(editor, latlng) {
@@ -489,7 +504,7 @@ function openAddSavedTrailPicker(onPick) {
     return;
   }
   const overlay = document.createElement("div");
-  overlay.className = "absolute inset-0 bg-paper z-20 p-4 overflow-y-auto rounded-3xl";
+  overlay.className = "absolute inset-0 bg-paper z-[1200] p-4 overflow-y-auto rounded-3xl";
   overlay.innerHTML = `
     <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-2">Add a saved trail</p>
     <div class="flex flex-col gap-2">
@@ -1018,7 +1033,7 @@ function enterMapEditMode(trail) {
     if (pointCount < 2) { showToast("Add at least two points first"); return; }
     const km = editorDistanceKm(modalEditor);
     const overlay = document.createElement("div");
-    overlay.className = "absolute inset-0 bg-paper z-20 p-5 overflow-y-auto rounded-3xl";
+    overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
     overlay.innerHTML = `
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
       <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
