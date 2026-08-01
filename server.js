@@ -224,17 +224,19 @@ app.get("/api/trails", async (req, res) => {
 
     // Resolve super-relations: recurse all the way down to the actual way
     // geometries, however many levels of nested sub-relations there are.
-    for (const { id, name } of superRelationsToResolve.slice(0, 3)) { // cap: at most a few per search
-      if (byName.has(name)) continue;
-      try {
-        const recurseQuery = `[out:json][timeout:60];relation(${id});(._;>>;);out geom;`.trim();
+    // Run these concurrently instead of one-by-one — sequential awaits here
+    // were very likely the main reason searches were taking minutes.
+    const toResolve = superRelationsToResolve.slice(0, 3).filter(({ name }) => !byName.has(name)); // cap: at most a few per search
+    const resolved = await Promise.allSettled(
+      toResolve.map(async ({ id, name }) => {
+        const recurseQuery = `[out:json][timeout:25];relation(${id});(._;>>;);out geom;`.trim();
         const recurseData = await runOverpassQuery(recurseQuery);
         const segCoordsList = (recurseData.elements || [])
           .filter((e) => e.type === "way" && e.geometry && e.geometry.length >= 2)
           .map((e) => e.geometry.filter((p) => p).map((p) => [p.lat, p.lon]));
-        if (segCoordsList.length === 0) continue;
+        if (segCoordsList.length === 0) throw new Error("no geometry resolved");
         const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
-        byName.set(name, {
+        return {
           name,
           distance_km: lenKm,
           segments: segCoordsList.length,
@@ -242,11 +244,13 @@ app.get("/api/trails", async (req, res) => {
           lon: segCoordsList[0][0][1],
           tags: {},
           segmentsGeom: segCoordsList,
-        });
-      } catch (recurseErr) {
-        console.error(`Super-relation resolution failed for "${name}":`, recurseErr.message || recurseErr);
-      }
-    }
+        };
+      })
+    );
+    resolved.forEach((r, i) => {
+      if (r.status === "fulfilled") byName.set(r.value.name, r.value);
+      else console.error(`Super-relation resolution failed for "${toResolve[i].name}":`, r.reason?.message || r.reason);
+    });
 
     // Merge in official NPS trail centerlines when a name was searched — this
     // catches famous NPS trails (e.g. Half Dome) that OSM might tag under a
