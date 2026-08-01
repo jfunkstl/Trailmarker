@@ -1009,6 +1009,7 @@ function enterMapEditMode(trail) {
   setTimeout(() => {
     const map = L.map("editMap");
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    map.invalidateSize();
     editMapInstance = map;
     modalEditor = makeEditor(map);
     // Start from a copy of the trail's existing geometry, not a live reference.
@@ -1020,7 +1021,7 @@ function enterMapEditMode(trail) {
 
     map.on("click", (e) => editorClick(modalEditor, e.latlng));
     editorSetMode(modalEditor, "pencil", editPencilBtn, editEraserBtn);
-  }, 0);
+  }, 250);
 
   editPencilBtn.onclick = () => editorSetMode(modalEditor, "pencil", editPencilBtn, editEraserBtn);
   editEraserBtn.onclick = () => editorSetMode(modalEditor, "eraser", editPencilBtn, editEraserBtn);
