@@ -147,8 +147,8 @@ const modalMaximizeBtn = document.getElementById("modalMaximize");
 let modalMaximized = false;
 let activeModalMap = null; // the Leaflet instance currently shown in the modal, if any
 
-const MODAL_COMPACT_CLASSES = "bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200";
-const MODAL_MAX_CLASSES = "bg-paper w-full h-[92vh] max-h-[92vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
+const MODAL_COMPACT_CLASSES = "relative bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200";
+const MODAL_MAX_CLASSES = "relative bg-paper w-full h-[92vh] max-h-[92vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
 const MAP_COMPACT_HEIGHT = "300px";
 const MAP_MAX_HEIGHT = "calc(92vh - 130px)";
 
@@ -160,12 +160,22 @@ function openModal(title, bodyHtml, options = {}) {
   modalPanel.className = MODAL_COMPACT_CLASSES;
   modalMaximizeBtn.classList.toggle("hidden", !options.mapModal);
   modalMaximizeBtn.textContent = "⤢";
+  document.getElementById("modalPencil").classList.toggle("hidden", !options.editable);
+  document.getElementById("modalEditPencil").classList.add("hidden");
+  document.getElementById("modalEditEraser").classList.add("hidden");
+  document.getElementById("modalEditAdd").classList.add("hidden");
 }
 function closeModal() {
   modalOverlay.classList.add("hidden");
   modalBody.innerHTML = "";
   activeModalMap = null;
   modalMaximized = false;
+  if (editMapInstance) { editMapInstance.remove(); editMapInstance = null; }
+  modalEditingTrail = null;
+  editSegments = [];
+  document.getElementById("modalPencil").classList.add("hidden");
+  document.getElementById("modalEditPencil").classList.add("hidden");
+  document.getElementById("modalEditEraser").classList.add("hidden");
 }
 document.getElementById("modalClose").addEventListener("click", closeModal);
 modalMaximizeBtn.addEventListener("click", () => {
@@ -367,32 +377,162 @@ function openSaveTrackModal() {
 
 trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTracking()));
 
+// ================= SHARED TRAIL-EDITING ENGINE =================
+// Both the Create tab and the "edit this trail's map" feature (from a trail's
+// detail page) need the same core abilities: draw point-to-point, erase
+// nearby points (can leave a gap mid-trail), undo, clear, and merge in
+// another saved trail as an extra piece. One shared engine avoids having to
+// keep two copies of this logic in sync.
+function makeEditor(map) {
+  return { map, segments: [], mode: "pencil", polylineLayer: null };
+}
+
+function editorRedraw(editor) {
+  if (!editor.polylineLayer) {
+    editor.polylineLayer = L.polyline(editor.segments, { color: "#1B4332", weight: 5 }).addTo(editor.map);
+  } else {
+    editor.polylineLayer.setLatLngs(editor.segments);
+  }
+}
+
+function editorClick(editor, latlng) {
+  const point = [latlng.lat, latlng.lng];
+  if (editor.mode === "pencil") {
+    if (editor.segments.length === 0) editor.segments.push([]);
+    editor.segments[editor.segments.length - 1].push(point);
+    editorRedraw(editor);
+  } else if (editor.mode === "eraser") {
+    editorEraseNear(editor, latlng);
+  }
+}
+
+// Erases points within ~24 screen pixels of the touch point — measured in
+// pixels (not meters) so it feels consistent at any zoom level, and can
+// split a segment in two (leaving a real visual gap) rather than just
+// straight-lining across the erased portion.
+function editorEraseNear(editor, latlng) {
+  const tapPoint = editor.map.latLngToContainerPoint(latlng);
+  const RADIUS_PX = 24;
+  const isNear = (p) => {
+    const pt = editor.map.latLngToContainerPoint(p);
+    return Math.hypot(pt.x - tapPoint.x, pt.y - tapPoint.y) <= RADIUS_PX;
+  };
+  const newSegments = [];
+  editor.segments.forEach((seg) => {
+    let current = [];
+    seg.forEach((p) => {
+      if (isNear(p)) {
+        if (current.length >= 2) newSegments.push(current);
+        current = [];
+      } else {
+        current.push(p);
+      }
+    });
+    if (current.length >= 2) newSegments.push(current);
+  });
+  editor.segments = newSegments;
+  editorRedraw(editor);
+}
+
+function editorUndo(editor) {
+  if (editor.segments.length === 0) return;
+  const last = editor.segments[editor.segments.length - 1];
+  last.pop();
+  if (last.length === 0) editor.segments.pop();
+  editorRedraw(editor);
+}
+
+function editorClear(editor) {
+  editor.segments = [];
+  editorRedraw(editor);
+}
+
+// Adds another saved trail's geometry as its own separate piece (not
+// connected by a straight line) — used both for Create's "Start from" and
+// the new "+" add-saved-trail button, and for combining multiple trails
+// into one custom route (e.g. stitching West Maroon + Maroon-Snowmass Trail
+// together into your own Four Pass Loop).
+function editorAddSegments(editor, geometry) {
+  if (!geometry) return;
+  geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
+  editorRedraw(editor);
+  const allPts = editor.segments.flat();
+  if (allPts.length) {
+    setTimeout(() => { editor.map.invalidateSize(); editor.map.fitBounds(allPts, { padding: [20, 20] }); }, 30);
+  }
+}
+
+function editorDistanceKm(editor) {
+  let km = 0;
+  editor.segments.forEach((seg) => {
+    for (let i = 1; i < seg.length; i++) km += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
+  });
+  return km;
+}
+
+function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
+  editor.mode = mode;
+  pencilBtn.classList.toggle("bg-pine", mode === "pencil");
+  pencilBtn.classList.toggle("text-white", mode === "pencil");
+  eraserBtn.classList.toggle("bg-pine", mode === "eraser");
+  eraserBtn.classList.toggle("text-white", mode === "eraser");
+}
+
+// Shows a scrollable list of saved trails to pick from, for the "+" button.
+// Uses an overlay rather than replacing modalBody's content, since the
+// editor's live Leaflet map instance lives inside modalBody and would be
+// destroyed (detached from the DOM) if we replaced its HTML wholesale.
+function openAddSavedTrailPicker(onPick) {
+  const savedWithGeometry = wishlist.filter((w) => w.geometry);
+  if (savedWithGeometry.length === 0) {
+    showToast("No saved trails with map data yet");
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "absolute inset-0 bg-paper z-20 p-4 overflow-y-auto rounded-3xl";
+  overlay.innerHTML = `
+    <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-2">Add a saved trail</p>
+    <div class="flex flex-col gap-2">
+      ${savedWithGeometry.map((w, i) => `
+        <button data-pick-idx="${i}" class="text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition">
+          <span class="font-condensed font-semibold">${escapeHtml(w.name)}</span>
+          <span class="text-xs opacity-60 block">${escapeHtml(w.location || "")}</span>
+        </button>
+      `).join("")}
+    </div>
+    <button id="pickCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition mt-3 w-full">Cancel</button>
+  `;
+  modalPanel.appendChild(overlay);
+  overlay.querySelector("#pickCancelBtn").addEventListener("click", () => overlay.remove());
+  overlay.querySelectorAll("[data-pick-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      onPick(savedWithGeometry[Number(btn.dataset.pickIdx)]);
+      overlay.remove();
+    });
+  });
+}
+
 // ================= CREATE =================
 let createMap = null;
-let createPolyline = null;
-let createPoints = []; // array of [lat, lon]
-let createBaseName = null; // name of the saved trail this route started from, if any
+let createEditor = null;
 
 function ensureCreateMap() {
   if (createMap) return createMap;
   createMap = L.map("createMap").setView([39.5, -98.35], 4);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
-  createPolyline = L.polyline([], { color: "#1B4332", weight: 5 }).addTo(createMap);
+  createEditor = makeEditor(createMap);
   createMap.on("click", (e) => {
-    createPoints.push([e.latlng.lat, e.latlng.lng]);
-    redrawCreateRoute();
+    editorClick(createEditor, e.latlng);
+    updateCreateStats();
   });
+  editorSetMode(createEditor, "pencil", document.getElementById("createPencilModeBtn"), document.getElementById("createEraserModeBtn"));
   return createMap;
 }
 
-function redrawCreateRoute() {
-  createPolyline.setLatLngs(createPoints);
-  document.getElementById("createPointCount").textContent = String(createPoints.length);
-  let km = 0;
-  for (let i = 1; i < createPoints.length; i++) {
-    km += haversineKm(createPoints[i - 1][0], createPoints[i - 1][1], createPoints[i][0], createPoints[i][1]);
-  }
-  document.getElementById("createDistance").textContent = fmtDist(km * 1000);
+function updateCreateStats() {
+  const pointCount = createEditor.segments.reduce((s, seg) => s + seg.length, 0);
+  document.getElementById("createPointCount").textContent = String(pointCount);
+  document.getElementById("createDistance").textContent = fmtDist(editorDistanceKm(createEditor) * 1000);
 }
 
 function populateCreateBasePicker() {
@@ -404,55 +544,61 @@ function populateCreateBasePicker() {
 }
 
 document.getElementById("createBasePicker").addEventListener("change", (e) => {
-  const map = ensureCreateMap();
+  ensureCreateMap();
   const id = e.target.value;
+  editorClear(createEditor);
   if (!id) {
-    createPoints = [];
-    createBaseName = null;
-    redrawCreateRoute();
-    map.setView([39.5, -98.35], 4);
+    createMap.setView([39.5, -98.35], 4);
     document.getElementById("createHint").textContent = "Tap the map to add points to your route.";
+    updateCreateStats();
     return;
   }
   const base = wishlist.find((w) => w.id === id);
   if (!base || !base.geometry) return;
-  createBaseName = base.name;
-  createPoints = [];
-  base.geometry.forEach((seg) => seg.forEach((pt) => createPoints.push(pt)));
-  redrawCreateRoute();
-  const bounds = createPoints.length ? createPoints : null;
-  setTimeout(() => {
-    map.invalidateSize();
-    if (bounds) map.fitBounds(bounds, { padding: [24, 24] });
-  }, 60);
+  editorAddSegments(createEditor, base.geometry);
   document.getElementById("createHint").textContent = `Starting from ${base.name} — tap the map to extend the route.`;
+  updateCreateStats();
+});
+
+document.getElementById("createPencilModeBtn").addEventListener("click", () => {
+  ensureCreateMap();
+  editorSetMode(createEditor, "pencil", document.getElementById("createPencilModeBtn"), document.getElementById("createEraserModeBtn"));
+});
+document.getElementById("createEraserModeBtn").addEventListener("click", () => {
+  ensureCreateMap();
+  editorSetMode(createEditor, "eraser", document.getElementById("createPencilModeBtn"), document.getElementById("createEraserModeBtn"));
+});
+document.getElementById("createAddSavedBtn").addEventListener("click", () => {
+  ensureCreateMap();
+  openAddSavedTrailPicker((picked) => {
+    editorAddSegments(createEditor, picked.geometry);
+    document.getElementById("createHint").textContent = `Added ${picked.name} — draw or erase to connect them.`;
+    updateCreateStats();
+  });
 });
 
 document.getElementById("createUndoBtn").addEventListener("click", () => {
-  createPoints.pop();
-  redrawCreateRoute();
+  editorUndo(createEditor);
+  updateCreateStats();
 });
 
 document.getElementById("createClearBtn").addEventListener("click", () => {
-  createPoints = [];
-  createBaseName = null;
+  editorClear(createEditor);
   document.getElementById("createBasePicker").value = "";
   document.getElementById("createHint").textContent = "Tap the map to add points to your route.";
-  redrawCreateRoute();
+  updateCreateStats();
 });
 
 document.getElementById("createSaveBtn").addEventListener("click", () => {
-  if (createPoints.length < 2) {
+  const pointCount = createEditor.segments.reduce((s, seg) => s + seg.length, 0);
+  if (pointCount < 2) {
     showToast("Add at least two points first");
     return;
   }
-  let km = 0;
-  for (let i = 1; i < createPoints.length; i++) {
-    km += haversineKm(createPoints[i - 1][0], createPoints[i - 1][1], createPoints[i][0], createPoints[i][1]);
-  }
+  const km = editorDistanceKm(createEditor);
   openModal("Save your route", `
-    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" value="${createBaseName ? escapeHtml(createBaseName) + " (custom)" : ""}" autofocus /></label>
-    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createPoints.length} points</p>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
+    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createEditor.segments.length} segment${createEditor.segments.length !== 1 ? "s" : ""}</p>
     <div class="flex gap-2 mt-4">
       <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
       <button id="createConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -461,15 +607,16 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   document.getElementById("createCancelBtn").addEventListener("click", closeModal);
   document.getElementById("createConfirmBtn").addEventListener("click", () => {
     const name = document.getElementById("createName").value.trim() || "Untitled route";
+    const firstPt = createEditor.segments[0][0];
     wishlist = [{
       id: uid(),
       name,
       location: "Custom route",
       notes: `${(km * 0.621371).toFixed(1)} mi · custom drawn route`,
       osm_url: null,
-      geometry: [createPoints],
-      lat: createPoints[0][0],
-      lon: createPoints[0][1],
+      geometry: createEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+      lat: firstPt[0],
+      lon: firstPt[1],
     }, ...wishlist];
     saveWishlist(wishlist);
     populateTrailPicker();
@@ -787,7 +934,7 @@ function openTrailMapModal(trail) {
   const hasGeometry = trail.geometry && trail.geometry.some((seg) => seg.length > 1);
   openModal(trail.name, hasGeometry
     ? `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="modalMapContainer"></div><p class="text-xs opacity-60 mt-1">Path shown is mapped OpenStreetMap data — actual conditions on the ground may differ.</p>`
-    : `<p class="text-center text-sm opacity-60 py-8">No mapped path is available for this trail yet.</p>`, { mapModal: hasGeometry });
+    : `<p class="text-center text-sm opacity-60 py-8">No mapped path is available for this trail yet.</p>`, { mapModal: hasGeometry, editable: hasGeometry });
   if (!hasGeometry) return;
 
   setTimeout(() => {
@@ -804,6 +951,104 @@ function openTrailMapModal(trail) {
     activeModalMap = map;
     activeModalMap._fitBounds = bounds.length ? bounds : null; // reused on maximize/minimize resize
   }, 0);
+
+  const pencilBtn = document.getElementById("modalPencil");
+  pencilBtn.classList.remove("hidden");
+  pencilBtn.onclick = () => enterMapEditMode(trail);
+}
+
+// ---- Trail-detail map editor: erase/redraw/combine an existing trail into
+// your own custom route, without leaving the trail detail page. ----
+let editMapInstance = null;
+let modalEditor = null;
+let modalEditingTrail = null;
+
+function enterMapEditMode(trail) {
+  modalEditingTrail = trail;
+  if (activeModalMap) { activeModalMap.remove(); activeModalMap = null; }
+
+  modalMaximized = true;
+  modalPanel.className = MODAL_MAX_CLASSES;
+  modalTitle.textContent = `Editing ${trail.name}`;
+  modalBody.innerHTML = `
+    <div class="rounded-2xl overflow-hidden border border-line mb-3">
+      <div id="editMap" class="w-full h-[60vh]"></div>
+    </div>
+    <div class="flex gap-2 flex-wrap">
+      <button id="editUndoBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Undo point</button>
+      <button id="editClearBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Clear</button>
+      <button id="editSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save route</button>
+    </div>
+  `;
+
+  // Swap header: hide the entry pencil + maximize, show pencil/eraser/+ editing controls.
+  document.getElementById("modalPencil").classList.add("hidden");
+  modalMaximizeBtn.classList.add("hidden");
+  const editPencilBtn = document.getElementById("modalEditPencil");
+  const editEraserBtn = document.getElementById("modalEditEraser");
+  const editAddBtn = document.getElementById("modalEditAdd");
+  editPencilBtn.classList.remove("hidden");
+  editEraserBtn.classList.remove("hidden");
+  editAddBtn.classList.remove("hidden");
+
+  setTimeout(() => {
+    const map = L.map("editMap");
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    editMapInstance = map;
+    modalEditor = makeEditor(map);
+    // Start from a copy of the trail's existing geometry, not a live reference.
+    modalEditor.segments = (trail.geometry || []).map((seg) => seg.map((p) => [p[0], p[1]]));
+    editorRedraw(modalEditor);
+    const allPts = modalEditor.segments.flat();
+    if (allPts.length) map.fitBounds(allPts, { padding: [16, 16] });
+    else map.setView([trail.lat, trail.lon], 12);
+
+    map.on("click", (e) => editorClick(modalEditor, e.latlng));
+    editorSetMode(modalEditor, "pencil", editPencilBtn, editEraserBtn);
+  }, 0);
+
+  editPencilBtn.onclick = () => editorSetMode(modalEditor, "pencil", editPencilBtn, editEraserBtn);
+  editEraserBtn.onclick = () => editorSetMode(modalEditor, "eraser", editPencilBtn, editEraserBtn);
+  editAddBtn.onclick = () => openAddSavedTrailPicker((picked) => editorAddSegments(modalEditor, picked.geometry));
+
+  document.getElementById("editUndoBtn").onclick = () => editorUndo(modalEditor);
+  document.getElementById("editClearBtn").onclick = () => editorClear(modalEditor);
+  document.getElementById("editSaveBtn").onclick = () => {
+    const pointCount = modalEditor.segments.reduce((s, seg) => s + seg.length, 0);
+    if (pointCount < 2) { showToast("Add at least two points first"); return; }
+    const km = editorDistanceKm(modalEditor);
+    const overlay = document.createElement("div");
+    overlay.className = "absolute inset-0 bg-paper z-20 p-5 overflow-y-auto rounded-3xl";
+    overlay.innerHTML = `
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
+      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
+      <div class="flex gap-2 mt-4">
+        <button id="editSaveCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Back</button>
+        <button id="editSaveConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
+      </div>
+    `;
+    modalPanel.appendChild(overlay);
+    overlay.querySelector("#editSaveCancelBtn").addEventListener("click", () => overlay.remove());
+    overlay.querySelector("#editSaveConfirmBtn").addEventListener("click", () => {
+      const name = document.getElementById("editRouteName").value.trim() || `${modalEditingTrail.name} (edited)`;
+      const firstPt = modalEditor.segments[0][0];
+      wishlist = [{
+        id: uid(),
+        name,
+        location: "Custom route",
+        notes: `${(km * 0.621371).toFixed(1)} mi · edited from ${modalEditingTrail.name}`,
+        osm_url: null,
+        geometry: modalEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+        lat: firstPt[0],
+        lon: firstPt[1],
+      }, ...wishlist];
+      saveWishlist(wishlist);
+      populateTrailPicker();
+      populateCreateBasePicker();
+      closeModal();
+      showToast("Route saved — find it in Track or your Saved list");
+    });
+  };
 }
 
 // Tries an OSM-authored description first, then a Wikipedia summary for
