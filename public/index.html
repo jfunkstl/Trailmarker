@@ -122,6 +122,12 @@
 
       <p class="text-sm opacity-70 mb-2" id="createHint">Tap the map to add points to your route.</p>
 
+      <div class="flex gap-2 mb-2.5">
+        <button id="createPencilModeBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">✏️ Draw</button>
+        <button id="createEraserModeBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">🧹 Erase</button>
+        <button id="createAddSavedBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">+ Add saved</button>
+      </div>
+
       <div class="rounded-2xl overflow-hidden border border-line">
         <div id="createMap" class="w-full h-[360px] bg-card"></div>
       </div>
@@ -207,6 +213,10 @@
       <div class="flex items-center justify-between mb-4">
         <h3 class="font-display text-xl" id="modalTitle">Save this hike</h3>
         <div class="flex items-center gap-2">
+          <button id="modalEditAdd" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
+          <button id="modalEditEraser" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
+          <button id="modalEditPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
+          <button id="modalPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
           <button id="modalMaximize" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">⤢</button>
           <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
         </div>
