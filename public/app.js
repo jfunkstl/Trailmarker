@@ -384,7 +384,7 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 // another saved trail as an extra piece. One shared engine avoids having to
 // keep two copies of this logic in sync.
 function makeEditor(map) {
-  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map) };
+  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map), freshSegment: true };
 }
 
 function editorRedraw(editor) {
@@ -413,7 +413,10 @@ function editorRedraw(editor) {
 function editorClick(editor, latlng) {
   const point = [latlng.lat, latlng.lng];
   if (editor.mode === "pencil") {
-    if (editor.segments.length === 0) editor.segments.push([]);
+    if (editor.segments.length === 0 || editor.freshSegment) {
+      editor.segments.push([]);
+      editor.freshSegment = false;
+    }
     editor.segments[editor.segments.length - 1].push(point);
     editorRedraw(editor);
   } else if (editor.mode === "eraser") {
@@ -459,6 +462,7 @@ function editorUndo(editor) {
 
 function editorClear(editor) {
   editor.segments = [];
+  editor.freshSegment = true;
   editorRedraw(editor);
 }
 
@@ -470,6 +474,7 @@ function editorClear(editor) {
 function editorAddSegments(editor, geometry) {
   if (!geometry) return;
   geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
+  editor.freshSegment = true;
   editorRedraw(editor);
   const allPts = editor.segments.flat();
   if (allPts.length) {
@@ -487,6 +492,7 @@ function editorDistanceKm(editor) {
 
 function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
   editor.mode = mode;
+  if (mode === "pencil") editor.freshSegment = true;
   pencilBtn.classList.toggle("bg-pine", mode === "pencil");
   pencilBtn.classList.toggle("text-white", mode === "pencil");
   eraserBtn.classList.toggle("bg-pine", mode === "eraser");
@@ -1007,7 +1013,7 @@ function enterMapEditMode(trail) {
   editAddBtn.classList.remove("hidden");
 
   setTimeout(() => {
-    const map = L.map("editMap");
+    const map = L.map("editMap").setView([39.5, -98.35], 4);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
     map.invalidateSize();
     editMapInstance = map;
