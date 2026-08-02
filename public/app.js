@@ -503,7 +503,7 @@ function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
 // Uses an overlay rather than replacing modalBody's content, since the
 // editor's live Leaflet map instance lives inside modalBody and would be
 // destroyed (detached from the DOM) if we replaced its HTML wholesale.
-function openAddSavedTrailPicker(onPick) {
+function openAddSavedTrailPicker(onPick, container = modalPanel) {
   const savedWithGeometry = wishlist.filter((w) => w.geometry);
   if (savedWithGeometry.length === 0) {
     showToast("No saved trails with map data yet");
@@ -523,7 +523,7 @@ function openAddSavedTrailPicker(onPick) {
     </div>
     <button id="pickCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition mt-3 w-full">Cancel</button>
   `;
-  modalPanel.appendChild(overlay);
+  container.appendChild(overlay);
   overlay.querySelector("#pickCancelBtn").addEventListener("click", () => overlay.remove());
   overlay.querySelectorAll("[data-pick-idx]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -595,7 +595,7 @@ document.getElementById("createAddSavedBtn").addEventListener("click", () => {
     editorAddSegments(createEditor, picked.geometry);
     document.getElementById("createHint").textContent = `Added ${picked.name} — draw or erase to connect them.`;
     updateCreateStats();
-  });
+  }, document.getElementById("createMapWrap"));
 });
 
 document.getElementById("createUndoBtn").addEventListener("click", () => {
