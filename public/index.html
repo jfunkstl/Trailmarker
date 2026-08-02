@@ -111,7 +111,14 @@
 
     <!-- CREATE -->
     <section id="tab-create" class="hidden">
-      <h2 class="font-display text-2xl mb-4">Create</h2>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="font-display text-2xl">Create</h2>
+        <div class="flex items-center gap-2">
+          <button id="createAddSavedBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
+          <button id="createEraserModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
+          <button id="createPencilModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
+        </div>
+      </div>
 
       <label class="block mb-3">
         <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Start from</span>
@@ -122,13 +129,7 @@
 
       <p class="text-sm opacity-70 mb-2" id="createHint">Tap the map to add points to your route.</p>
 
-      <div class="flex gap-2 mb-2.5">
-        <button id="createPencilModeBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">✏️ Draw</button>
-        <button id="createEraserModeBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">🧹 Erase</button>
-        <button id="createAddSavedBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">+ Add saved</button>
-      </div>
-
-      <div class="rounded-2xl overflow-hidden border border-line">
+      <div id="createMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
         <div id="createMap" class="w-full h-[360px] bg-card"></div>
       </div>
 
