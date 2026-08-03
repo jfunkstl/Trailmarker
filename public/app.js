@@ -107,6 +107,10 @@ function showToast(msg) {
   showToast._t = setTimeout(() => el.classList.add("hidden"), 2200);
 }
 
+function stateOptionsHtml(selected) {
+  return ALL_STATES.map((s) => `<option value="${s}" ${s === selected ? "selected" : ""}>${s}</option>`).join("");
+}
+
 function haversineKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -619,6 +623,7 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   const km = editorDistanceKm(createEditor);
   openModal("Save your route", `
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="createState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml("Colorado")}</select></label>
     <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createEditor.segments.length} segment${createEditor.segments.length !== 1 ? "s" : ""}</p>
     <div class="flex gap-2 mt-4">
       <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
@@ -628,16 +633,19 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   document.getElementById("createCancelBtn").addEventListener("click", closeModal);
   document.getElementById("createConfirmBtn").addEventListener("click", () => {
     const name = document.getElementById("createName").value.trim() || "Untitled route";
+    const state = document.getElementById("createState").value;
     const firstPt = createEditor.segments[0][0];
     wishlist = [{
       id: uid(),
       name,
-      location: "Custom route",
+      location: state,
       notes: `${(km * 0.621371).toFixed(1)} mi · custom drawn route`,
       osm_url: null,
       geometry: createEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
       lat: firstPt[0],
       lon: firstPt[1],
+      distance_km: km,
+      custom: true,
     }, ...wishlist];
     saveWishlist(wishlist);
     populateTrailPicker();
@@ -741,14 +749,17 @@ document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
   });
 });
 
+let ALL_STATES = [];
 async function loadStates() {
   const select = document.getElementById("state");
   try {
     const res = await fetch("/api/states");
     const { states } = await res.json();
+    ALL_STATES = states;
     select.innerHTML = states.map((s) => `<option value="${s}">${s}</option>`).join("");
     select.value = "Colorado";
   } catch {
+    ALL_STATES = ["Colorado"];
     select.innerHTML = `<option value="Colorado">Colorado</option>`;
   }
 }
@@ -1043,6 +1054,7 @@ function enterMapEditMode(trail) {
     overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
     overlay.innerHTML = `
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="editRouteState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml(modalEditingTrail.state && ALL_STATES.includes(modalEditingTrail.state) ? modalEditingTrail.state : "Colorado")}</select></label>
       <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
       <div class="flex gap-2 mt-4">
         <button id="editSaveCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Back</button>
@@ -1053,16 +1065,19 @@ function enterMapEditMode(trail) {
     overlay.querySelector("#editSaveCancelBtn").addEventListener("click", () => overlay.remove());
     overlay.querySelector("#editSaveConfirmBtn").addEventListener("click", () => {
       const name = document.getElementById("editRouteName").value.trim() || `${modalEditingTrail.name} (edited)`;
+      const state = document.getElementById("editRouteState").value;
       const firstPt = modalEditor.segments[0][0];
       wishlist = [{
         id: uid(),
         name,
-        location: "Custom route",
+        location: state,
         notes: `${(km * 0.621371).toFixed(1)} mi · edited from ${modalEditingTrail.name}`,
         osm_url: null,
         geometry: modalEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
         lat: firstPt[0],
         lon: firstPt[1],
+        distance_km: km,
+        custom: true,
       }, ...wishlist];
       saveWishlist(wishlist);
       populateTrailPicker();
@@ -1607,10 +1622,49 @@ function renderSaved() {
       <div class="flex gap-2 mt-3 flex-wrap">
         ${w.geometry ? `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-track-wish="${w.id}">Track this</button>` : ""}
         <button class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition" data-complete-wish="${w.id}">Mark as hiked</button>
+        ${w.custom && w.geometry
+          ? w.addedToDb
+            ? `<span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium self-center">✓ In shared database</span>`
+            : `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-submit-wish="${w.id}">Add to database</button>`
+          : ""}
         ${w.osm_url ? `<a class="block text-sm text-pine underline mt-2" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
       </div>
     </div>
   `).join("");
+
+  el.querySelectorAll("[data-submit-wish]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const w = wishlist.find((x) => x.id === btn.dataset.submitWish);
+      btn.textContent = "Adding…";
+      btn.disabled = true;
+      try {
+        const resp = await fetch("/api/community-trails", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: w.name, state: w.location, geometry: w.geometry,
+            distance_km: w.distance_km || 0, notes: w.notes, lat: w.lat, lon: w.lon,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showToast(data.error || "Couldn't add to the shared database");
+          btn.textContent = "Add to database";
+          btn.disabled = false;
+          return;
+        }
+        w.addedToDb = true;
+        saveWishlist(wishlist);
+        showToast(`${w.name} added to the shared database — now searchable by everyone`);
+        renderSaved();
+      } catch (err) {
+        console.error(err);
+        showToast("Couldn't reach the server");
+        btn.textContent = "Add to database";
+        btn.disabled = false;
+      }
+    });
+  });
 
   el.querySelectorAll("[data-detail-wish]").forEach((el2) => {
     el2.addEventListener("click", () => {
