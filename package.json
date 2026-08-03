@@ -1,7 +1,7 @@
 {
-  "name": "trailmark-live",
+  "name": "trailseeker",
   "version": "1.0.0",
-  "description": "TrailMark's Discover tab as a standalone app, backed by live OpenStreetMap trail data.",
+  "description": "Trailseeker — seek your next adventure. Live hiking trail discovery backed by OpenStreetMap data.",
   "type": "module",
   "engines": {
     "node": ">=18"
@@ -10,6 +10,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "mongodb": "^6.10.0"
   }
 }
