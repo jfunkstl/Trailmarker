@@ -1,10 +1,12 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import { MongoClient } from "mongodb";
 import { STATE_ISO, STATE_LIST } from "./states.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const OVERPASS_URLS = [
   process.env.OVERPASS_URL,
@@ -12,6 +14,34 @@ const OVERPASS_URLS = [
   "https://overpass.kumi.systems/api/interpreter",
   "https://overpass.openstreetmap.ru/api/interpreter",
 ].filter(Boolean);
+
+// Shared community-submitted trails — a real, persistent, shared database
+// (MongoDB Atlas free tier), separate from each user's own browser storage.
+// Only active once MONGODB_URI is set as an environment variable on Render;
+// until then, community-trail features quietly no-op so nothing else breaks.
+let mongoClientPromise = null;
+function getMongoClient() {
+  if (!process.env.MONGODB_URI) return null;
+  if (!mongoClientPromise) {
+    const client = new MongoClient(process.env.MONGODB_URI);
+    mongoClientPromise = client.connect().then(() => client).catch((err) => {
+      console.error("MongoDB connection failed:", err.message || err);
+      mongoClientPromise = null;
+      throw err;
+    });
+  }
+  return mongoClientPromise;
+}
+async function getCommunityTrailsCollection() {
+  const clientPromise = getMongoClient();
+  if (!clientPromise) return null;
+  try {
+    const client = await clientPromise;
+    return client.db("trailseeker").collection("community_trails");
+  } catch (err) {
+    return null;
+  }
+}
 
 // Simple in-memory cache so repeat searches don't hammer the public Overpass
 // endpoint (it's free, shared infrastructure and rate-limits aggressively).
@@ -356,6 +386,35 @@ app.get("/api/trails", async (req, res) => {
       .sort((a, b) => b.distance_km - a.distance_km)
       .slice(0, 150);
 
+    // Merge in community-submitted trails (custom routes users have added
+    // to the shared database) matching this state and name filter.
+    try {
+      const collection = await getCommunityTrailsCollection();
+      if (collection) {
+        const mongoQuery = { state: stateInput };
+        if (q) mongoQuery.name = { $regex: escapeRegex(q), $options: "i" };
+        const community = await collection.find(mongoQuery).limit(50).toArray();
+        community.forEach((c) => {
+          trails.push({
+            name: c.name,
+            state: c.state,
+            distance_km: c.distance_km,
+            difficulty: "Unknown",
+            surface: null,
+            segments: c.geometry.length,
+            lat: c.lat,
+            lon: c.lon,
+            geometry: c.geometry,
+            osm_description: c.notes || "A custom route added by a Trailseeker user.",
+            osm_url: null,
+            community: true,
+          });
+        });
+      }
+    } catch (communityErr) {
+      console.error("Community trails merge failed:", communityErr.message || communityErr);
+    }
+
     cache.set(cacheKey, { data: trails, expires: Date.now() + CACHE_TTL_MS });
     res.json({ trails, cached: false, source: "OpenStreetMap (Overpass API)" });
   } catch (err) {
@@ -554,6 +613,33 @@ app.get("/api/usa-trails", async (req, res) => {
       })
       .sort((a, b) => b.distance_km - a.distance_km)
       .slice(0, 20);
+
+    // Merge in community-submitted trails matching this name, nationwide
+    // (no state constraint here, same as the rest of this endpoint).
+    try {
+      const collection = await getCommunityTrailsCollection();
+      if (collection) {
+        const community = await collection.find({ name: { $regex: escapeRegex(q), $options: "i" } }).limit(20).toArray();
+        community.forEach((c) => {
+          trails.push({
+            name: c.name,
+            state: c.state || "USA",
+            distance_km: c.distance_km,
+            difficulty: "Unknown",
+            surface: null,
+            segments: c.geometry.length,
+            lat: c.lat,
+            lon: c.lon,
+            geometry: c.geometry,
+            osm_description: c.notes || "A custom route added by a Trailseeker user.",
+            osm_url: null,
+            community: true,
+          });
+        });
+      }
+    } catch (communityErr) {
+      console.error("Community trails merge failed:", communityErr.message || communityErr);
+    }
 
     cache.set(cacheKey, { data: trails, expires: Date.now() + CACHE_TTL_MS });
     res.json({ trails, cached: false });
@@ -906,6 +992,42 @@ app.get("/api/elevation", async (req, res) => {
   }
 
   res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
+});
+
+// Lets a user submit a custom-created route (from Create or the trail
+// editor) to the shared, searchable database — this is what makes routes
+// like a homemade "Four Pass Loop" findable by other people via Discover,
+// not just saved in your own browser.
+app.post("/api/community-trails", async (req, res) => {
+  const collection = await getCommunityTrailsCollection();
+  if (!collection) {
+    return res.status(503).json({ error: "The shared database isn't configured yet — MONGODB_URI needs to be set on the server." });
+  }
+
+  const { name, state, geometry, distance_km, notes, lat, lon } = req.body || {};
+  if (!name || !state || !geometry || !Array.isArray(geometry) || geometry.length === 0) {
+    return res.status(400).json({ error: "Missing name, state, or geometry." });
+  }
+  if (!STATE_ISO[state] && !STATE_ISO[state.toLowerCase()]) {
+    return res.status(400).json({ error: "Unrecognized state — pick one from the list." });
+  }
+
+  try {
+    await collection.insertOne({
+      name: String(name).slice(0, 120),
+      state,
+      geometry,
+      distance_km: Number(distance_km) || 0,
+      notes: notes ? String(notes).slice(0, 500) : null,
+      lat: Number(lat),
+      lon: Number(lon),
+      addedAt: new Date(),
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Community trail submission failed:", err.message || err);
+    res.status(500).json({ error: "Couldn't save this to the shared database right now." });
+  }
 });
 
 app.use(express.static(path.join(__dirname, "public")));
