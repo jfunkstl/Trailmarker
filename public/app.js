@@ -111,7 +111,90 @@ function stateOptionsHtml(selected) {
   return ALL_STATES.map((s) => `<option value="${s}" ${s === selected ? "selected" : ""}>${s}</option>`).join("");
 }
 
-function haversineKm(lat1, lon1, lat2, lon2) {
+function haversineKm(lat1, lon1, lat2, lon2) {// ---------- directed-path chaining & validation ----------
+// Reorders possibly-disconnected segments into the order a hiker would
+// actually walk them, starting from startPoint. Greedily attaches whichever
+// remaining segment endpoint is closest to the current chain's end,
+// reversing that segment if needed so the matched endpoint connects first.
+// This matters for combined/edited custom routes: segments were previously
+// stored in whatever order they were drawn or added via "+", which could
+// make the sampled elevation chart jump around geographically instead of
+// reading as one continuous walk.
+function chainSegmentsFromStart(segments, startPoint) {
+  const remaining = segments
+    .filter((seg) => Array.isArray(seg) && seg.length >= 2)
+    .map((seg) => seg.slice());
+  if (remaining.length === 0) return [];
+  if (remaining.length === 1) return remaining;
+
+  const dist = (a, b) => haversineKm(a[0], a[1], b[0], b[1]);
+
+  let startIdx = 0, startReversed = false, bestD = Infinity;
+  remaining.forEach((seg, i) => {
+    const dStart = dist(startPoint, seg[0]);
+    const dEnd = dist(startPoint, seg[seg.length - 1]);
+    if (dStart < bestD) { bestD = dStart; startIdx = i; startReversed = false; }
+    if (dEnd < bestD) { bestD = dEnd; startIdx = i; startReversed = true; }
+  });
+
+  const used = new Array(remaining.length).fill(false);
+  let firstSeg = remaining[startIdx];
+  if (startReversed) firstSeg = firstSeg.slice().reverse();
+  const chain = [firstSeg];
+  used[startIdx] = true;
+  let chainEnd = firstSeg[firstSeg.length - 1];
+
+  for (let step = 1; step < remaining.length; step++) {
+    let nextIdx = -1, nextReversed = false, nextD = Infinity;
+    remaining.forEach((seg, i) => {
+      if (used[i]) return;
+      const dStart = dist(chainEnd, seg[0]);
+      const dEnd = dist(chainEnd, seg[seg.length - 1]);
+      if (dStart < nextD) { nextD = dStart; nextIdx = i; nextReversed = false; }
+      if (dEnd < nextD) { nextD = dEnd; nextIdx = i; nextReversed = true; }
+    });
+    if (nextIdx === -1) break;
+    let nextSeg = remaining[nextIdx];
+    if (nextReversed) nextSeg = nextSeg.slice().reverse();
+    chain.push(nextSeg);
+    used[nextIdx] = true;
+    chainEnd = nextSeg[nextSeg.length - 1];
+  }
+  return chain;
+}
+
+// Structural sanity check before a route gets saved — catches empty
+// segments, malformed points, and out-of-range coordinates before they
+// reach localStorage or the shared database, where a bad point can
+// silently break the elevation chart or map bounds later.
+function validateGeometry(geometry) {
+  if (!Array.isArray(geometry) || geometry.length === 0) {
+    return { valid: false, error: "Route has no segments to save." };
+  }
+  let totalPoints = 0;
+  for (const seg of geometry) {
+    if (!Array.isArray(seg) || seg.length < 2) {
+      return { valid: false, error: "Route has a segment with fewer than 2 points." };
+    }
+    for (const p of seg) {
+      if (!Array.isArray(p) || p.length < 2) {
+        return { valid: false, error: "Route has a malformed point." };
+      }
+      const [lat, lon] = p;
+      if (typeof lat !== "number" || typeof lon !== "number" || Number.isNaN(lat) || Number.isNaN(lon)) {
+        return { valid: false, error: "Route has a non-numeric coordinate." };
+      }
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        return { valid: false, error: "Route has a coordinate out of valid range." };
+      }
+    }
+    totalPoints += seg.length;
+  }
+  if (totalPoints < 2) {
+    return { valid: false, error: "Add at least two points before saving." };
+  }
+  return { valid: true, error: null };
+}
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLon = ((lon2 - lon1) * Math.PI) / 180;
