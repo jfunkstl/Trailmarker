@@ -205,6 +205,101 @@ function validateGeometry(geometry) {
   return { valid: true, error: null };
 }
 
+// Finds whichever segment endpoint (a segment's first or last point) is
+// closest to a given point. Used both to snap a dragged Start/End marker
+// onto a real point in the route, and to figure out which segment+end a
+// marker currently represents when building the final chained geometry.
+function findClosestSegmentEndpoint(segments, point) {
+  let best = null;
+  segments.forEach((seg, segIdx) => {
+    if (!Array.isArray(seg) || seg.length < 2) return;
+    const startP = seg[0];
+    const endP = seg[seg.length - 1];
+    const dStart = haversineKm(point[0], point[1], startP[0], startP[1]);
+    const dEnd = haversineKm(point[0], point[1], endP[0], endP[1]);
+    if (!best || dStart < best.dist) best = { segIdx, end: "start", point: startP, dist: dStart };
+    if (!best || dEnd < best.dist) best = { segIdx, end: "end", point: endP, dist: dEnd };
+  });
+  return best;
+}
+
+// Chains segments into walking order using explicit start/end points chosen
+// by the user (the draggable S/E markers), rather than guessing. The
+// segment touching the start marker is placed first (oriented so that
+// endpoint comes first); the segment touching the end marker is placed
+// last (oriented so that endpoint comes last); everything else in between
+// is chained via nearest-neighbor, same approach as before. This removes
+// the ambiguity that made chainSegmentsFromStart's automatic guess
+// sometimes pick a technically-valid but unintended order for combined
+// routes.
+function chainSegmentsWithEndpoints(segments, startPoint, endPoint) {
+  const valid = segments
+    .filter((seg) => Array.isArray(seg) && seg.length >= 2)
+    .map((seg) => seg.slice());
+  if (valid.length === 0) return [];
+
+  if (valid.length === 1) {
+    const seg = valid[0];
+    const dStart = startPoint ? haversineKm(startPoint[0], startPoint[1], seg[0][0], seg[0][1]) : 0;
+    const dEndAsStart = startPoint ? haversineKm(startPoint[0], startPoint[1], seg[seg.length - 1][0], seg[seg.length - 1][1]) : 0;
+    return dEndAsStart < dStart ? [seg.slice().reverse()] : [seg];
+  }
+
+  const effectiveStart = startPoint || valid[0][0];
+  const effectiveEnd = endPoint || valid[valid.length - 1][valid[valid.length - 1].length - 1];
+
+  const startMatch = findClosestSegmentEndpoint(valid, effectiveStart);
+  let endMatch = findClosestSegmentEndpoint(valid, effectiveEnd);
+
+  // If both markers snapped to the same segment (e.g. only that segment's
+  // endpoints are close to both), pick the best DISTINCT-segment match for
+  // the end marker instead, so start and end don't collapse onto one piece.
+  if (endMatch.segIdx === startMatch.segIdx) {
+    let best = null;
+    valid.forEach((seg, segIdx) => {
+      if (segIdx === startMatch.segIdx) return;
+      const startP = seg[0];
+      const endP = seg[seg.length - 1];
+      const dStart = haversineKm(effectiveEnd[0], effectiveEnd[1], startP[0], startP[1]);
+      const dEnd = haversineKm(effectiveEnd[0], effectiveEnd[1], endP[0], endP[1]);
+      if (!best || dStart < best.dist) best = { segIdx, end: "start", point: startP, dist: dStart };
+      if (!best || dEnd < best.dist) best = { segIdx, end: "end", point: endP, dist: dEnd };
+    });
+    if (best) endMatch = best;
+  }
+
+  let firstSeg = valid[startMatch.segIdx].slice();
+  if (startMatch.end === "end") firstSeg = firstSeg.reverse();
+
+  let lastSeg = valid[endMatch.segIdx].slice();
+  if (endMatch.end === "start") lastSeg = lastSeg.reverse();
+
+  const middleSegments = valid.filter((_, i) => i !== startMatch.segIdx && i !== endMatch.segIdx);
+  const used = new Array(middleSegments.length).fill(false);
+  const chain = [firstSeg];
+  let chainEnd = firstSeg[firstSeg.length - 1];
+
+  for (let step = 0; step < middleSegments.length; step++) {
+    let nextIdx = -1, nextReversed = false, nextD = Infinity;
+    middleSegments.forEach((seg, i) => {
+      if (used[i]) return;
+      const dStart = haversineKm(chainEnd[0], chainEnd[1], seg[0][0], seg[0][1]);
+      const dEnd = haversineKm(chainEnd[0], chainEnd[1], seg[seg.length - 1][0], seg[seg.length - 1][1]);
+      if (dStart < nextD) { nextD = dStart; nextIdx = i; nextReversed = false; }
+      if (dEnd < nextD) { nextD = dEnd; nextIdx = i; nextReversed = true; }
+    });
+    if (nextIdx === -1) break;
+    let nextSeg = middleSegments[nextIdx];
+    if (nextReversed) nextSeg = nextSeg.slice().reverse();
+    chain.push(nextSeg);
+    used[nextIdx] = true;
+    chainEnd = nextSeg[nextSeg.length - 1];
+  }
+
+  chain.push(lastSeg);
+  return chain;
+}
+
 function updateStatLine() {
   const total = hikes.reduce((s, h) => s + (h.distance || 0), 0);
   document.getElementById("statLine").textContent = `${hikes.length} hikes logged · ${fmtDist(total)} total`;
@@ -472,8 +567,72 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 // nearby points (can leave a gap mid-trail), undo, clear, and merge in
 // another saved trail as an extra piece. One shared engine avoids having to
 // keep two copies of this logic in sync.
-function makeEditor(map) {
-  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map), freshSegment: true };
+function makeEditor(map, onEndpointChange) {
+  return {
+    map, segments: [], mode: "pencil", polylineLayer: null,
+    markerGroup: L.layerGroup().addTo(map), freshSegment: true,
+    endpointGroup: L.layerGroup().addTo(map),
+    startPoint: null, endPoint: null, startMarker: null, endMarker: null,
+    onEndpointChange: onEndpointChange || null,
+  };
+}
+
+const START_MARKER_ICON = L.divIcon({
+  html: `<div style="width:26px;height:26px;border-radius:50%;background:#2f9e44;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-weight:700;font-size:12px;">S</div>`,
+  className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+});
+const END_MARKER_ICON = L.divIcon({
+  html: `<div style="width:26px;height:26px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-weight:700;font-size:12px;">E</div>`,
+  className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+});
+
+// Renders (or refreshes) the draggable Start/End markers a person uses to
+// tell the editor exactly which end of a combined/edited route is the real
+// trailhead and which is the real finish — resolving the ambiguity that a
+// fully-automatic guess can't. Markers snap onto real segment endpoints
+// only (not arbitrary map taps), and dragging one re-chains the route via
+// chainSegmentsWithEndpoints so the order/orientation always matches
+// what's shown. If the point a marker was on gets erased/undone, it
+// falls back to a sensible default instead of pointing at nothing.
+function editorUpdateEndpoints(editor) {
+  const validSegs = editor.segments.filter((seg) => Array.isArray(seg) && seg.length >= 2);
+  if (validSegs.length === 0) {
+    editor.endpointGroup.clearLayers();
+    editor.startMarker = null;
+    editor.endMarker = null;
+    editor.startPoint = null;
+    editor.endPoint = null;
+    return;
+  }
+
+  const allEndpoints = [];
+  validSegs.forEach((seg) => { allEndpoints.push(seg[0]); allEndpoints.push(seg[seg.length - 1]); });
+  const pointExists = (p) => p && allEndpoints.some((ep) => ep[0] === p[0] && ep[1] === p[1]);
+  if (!pointExists(editor.startPoint)) editor.startPoint = validSegs[0][0];
+  if (!pointExists(editor.endPoint)) editor.endPoint = validSegs[validSegs.length - 1][validSegs[validSegs.length - 1].length - 1];
+
+  editor.endpointGroup.clearLayers();
+  editor.startMarker = L.marker(editor.startPoint, { icon: START_MARKER_ICON, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
+  editor.endMarker = L.marker(editor.endPoint, { icon: END_MARKER_ICON, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
+
+  editor.startMarker.on("dragend", () => {
+    const dragged = editor.startMarker.getLatLng();
+    const match = findClosestSegmentEndpoint(editor.segments.filter((s) => s.length >= 2), [dragged.lat, dragged.lng]);
+    if (match) {
+      editor.startPoint = match.point;
+      editor.startMarker.setLatLng(match.point);
+    }
+    if (editor.onEndpointChange) editor.onEndpointChange();
+  });
+  editor.endMarker.on("dragend", () => {
+    const dragged = editor.endMarker.getLatLng();
+    const match = findClosestSegmentEndpoint(editor.segments.filter((s) => s.length >= 2), [dragged.lat, dragged.lng]);
+    if (match) {
+      editor.endPoint = match.point;
+      editor.endMarker.setLatLng(match.point);
+    }
+    if (editor.onEndpointChange) editor.onEndpointChange();
+  });
 }
 
 function editorRedraw(editor) {
@@ -497,6 +656,7 @@ function editorRedraw(editor) {
       }).addTo(editor.markerGroup);
     });
   });
+  editorUpdateEndpoints(editor);
 }
 
 function editorClick(editor, latlng) {
@@ -630,7 +790,7 @@ function ensureCreateMap() {
   if (createMap) return createMap;
   createMap = L.map("createMap").setView([39.5, -98.35], 4);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
-  createEditor = makeEditor(createMap);
+  createEditor = makeEditor(createMap, updateCreateStats);
   createMap.on("click", (e) => {
     editorClick(createEditor, e.latlng);
     updateCreateStats();
@@ -706,8 +866,7 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
     return;
   }
 
-  const startPoint = createEditor.segments[0][0];
-  const chainedGeometry = chainSegmentsFromStart(createEditor.segments, startPoint);
+  const chainedGeometry = chainSegmentsWithEndpoints(createEditor.segments, createEditor.startPoint, createEditor.endPoint);
   const validation = validateGeometry(chainedGeometry);
   if (!validation.valid) {
     showToast(validation.error);
@@ -1126,7 +1285,7 @@ function enterMapEditMode(trail) {
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
     map.invalidateSize();
     editMapInstance = map;
-    modalEditor = makeEditor(map);
+    modalEditor = makeEditor(map, null);
     // Start from a copy of the trail's existing geometry, not a live reference.
     modalEditor.segments = (trail.geometry || []).map((seg) => seg.map((p) => [p[0], p[1]]));
     editorRedraw(modalEditor);
@@ -1147,13 +1306,25 @@ function enterMapEditMode(trail) {
   document.getElementById("editSaveBtn").onclick = () => {
     const pointCount = modalEditor.segments.reduce((s, seg) => s + seg.length, 0);
     if (pointCount < 2) { showToast("Add at least two points first"); return; }
-    const km = editorDistanceKm(modalEditor);
+
+    const chainedGeometry = chainSegmentsWithEndpoints(modalEditor.segments, modalEditor.startPoint, modalEditor.endPoint);
+    const validation = validateGeometry(chainedGeometry);
+    if (!validation.valid) {
+      showToast(validation.error);
+      return;
+    }
+
+    const km = chainedGeometry.reduce((sum, seg) => {
+      for (let i = 1; i < seg.length; i++) sum += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
+      return sum;
+    }, 0);
+
     const overlay = document.createElement("div");
     overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
     overlay.innerHTML = `
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="editRouteState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml(modalEditingTrail.state && ALL_STATES.includes(modalEditingTrail.state) ? modalEditingTrail.state : "Colorado")}</select></label>
-      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
+      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedGeometry.length} segment${chainedGeometry.length !== 1 ? "s" : ""}</p>
       <div class="flex gap-2 mt-4">
         <button id="editSaveCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Back</button>
         <button id="editSaveConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -1164,14 +1335,14 @@ function enterMapEditMode(trail) {
     overlay.querySelector("#editSaveConfirmBtn").addEventListener("click", () => {
       const name = document.getElementById("editRouteName").value.trim() || `${modalEditingTrail.name} (edited)`;
       const state = document.getElementById("editRouteState").value;
-      const firstPt = modalEditor.segments[0][0];
+      const firstPt = chainedGeometry[0][0];
       wishlist = [{
         id: uid(),
         name,
         location: state,
         notes: `${(km * 0.621371).toFixed(1)} mi · edited from ${modalEditingTrail.name}`,
         osm_url: null,
-        geometry: modalEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+        geometry: chainedGeometry.map((seg) => seg.map((p) => [p[0], p[1]])),
         lat: firstPt[0],
         lon: firstPt[1],
         distance_km: km,
