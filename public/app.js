@@ -111,7 +111,16 @@ function stateOptionsHtml(selected) {
   return ALL_STATES.map((s) => `<option value="${s}" ${s === selected ? "selected" : ""}>${s}</option>`).join("");
 }
 
-function haversineKm(lat1, lon1, lat2, lon2) {// ---------- directed-path chaining & validation ----------
+function haversineKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const la1 = (lat1 * Math.PI) / 180, la2 = (lat2 * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+// ---------- directed-path chaining & validation ----------
 // Reorders possibly-disconnected segments into the order a hiker would
 // actually walk them, starting from startPoint. Greedily attaches whichever
 // remaining segment endpoint is closest to the current chain's end,
@@ -194,13 +203,6 @@ function validateGeometry(geometry) {
     return { valid: false, error: "Add at least two points before saving." };
   }
   return { valid: true, error: null };
-}
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const la1 = (lat1 * Math.PI) / 180, la2 = (lat2 * Math.PI) / 180;
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
 function updateStatLine() {
@@ -703,11 +705,24 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
     showToast("Add at least two points first");
     return;
   }
-  const km = editorDistanceKm(createEditor);
+
+  const startPoint = createEditor.segments[0][0];
+  const chainedGeometry = chainSegmentsFromStart(createEditor.segments, startPoint);
+  const validation = validateGeometry(chainedGeometry);
+  if (!validation.valid) {
+    showToast(validation.error);
+    return;
+  }
+
+  const km = chainedGeometry.reduce((sum, seg) => {
+    for (let i = 1; i < seg.length; i++) sum += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
+    return sum;
+  }, 0);
+
   openModal("Save your route", `
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="createState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml("Colorado")}</select></label>
-    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createEditor.segments.length} segment${createEditor.segments.length !== 1 ? "s" : ""}</p>
+    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedGeometry.length} segment${chainedGeometry.length !== 1 ? "s" : ""}</p>
     <div class="flex gap-2 mt-4">
       <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
       <button id="createConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -717,14 +732,14 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   document.getElementById("createConfirmBtn").addEventListener("click", () => {
     const name = document.getElementById("createName").value.trim() || "Untitled route";
     const state = document.getElementById("createState").value;
-    const firstPt = createEditor.segments[0][0];
+    const firstPt = chainedGeometry[0][0];
     wishlist = [{
       id: uid(),
       name,
       location: state,
       notes: `${(km * 0.621371).toFixed(1)} mi · custom drawn route`,
       osm_url: null,
-      geometry: createEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+      geometry: chainedGeometry.map((seg) => seg.map((p) => [p[0], p[1]])),
       lat: firstPt[0],
       lon: firstPt[1],
       distance_km: km,
@@ -1489,15 +1504,29 @@ function openElevationModal() {
 async function loadElevationChart(trail) {
   const note = document.getElementById("elevationNote");
   try {
-    // Flatten geometry into one path with cumulative distance, then sample
-    // ~20 evenly spaced points (elevation lookups are one-point-at-a-time).
+    // Flatten geometry, tracking which points start a new segment.
+    // Combined/edited custom routes can have segments that don't
+    // physically touch (stitched trails, eraser gaps) — the distance
+    // "between" segments isn't real walked distance and must NOT be
+    // added to cumulative mileage, or sample spacing and the scrub
+    // marker both get thrown off by a fake multi-mile jump.
     const allPoints = [];
-    trail.geometry.forEach((seg) => seg.forEach((pt) => allPoints.push(pt)));
+    const isSegmentStart = [];
+    trail.geometry.forEach((seg) => {
+      seg.forEach((pt, i) => {
+        allPoints.push(pt);
+        isSegmentStart.push(i === 0);
+      });
+    });
     if (allPoints.length < 2) throw new Error("not enough points");
 
     const cum = [0];
     for (let i = 1; i < allPoints.length; i++) {
-      cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
+      if (isSegmentStart[i]) {
+        cum.push(cum[i - 1]);
+      } else {
+        cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
+      }
     }
     const totalKm = cum[cum.length - 1];
     const SAMPLES = 20;
