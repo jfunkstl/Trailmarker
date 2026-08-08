@@ -659,9 +659,32 @@ function editorRedraw(editor) {
   editorUpdateEndpoints(editor);
 }
 
+// Looks for an existing point (from any segment already on the map — a
+// saved trail you started from, one added via "+", or your own earlier
+// drawing) within ~20 screen pixels of a tap. Used so a newly hand-drawn
+// connector can lock exactly onto a real trail's endpoint instead of
+// landing a few feet off — a gap that small still reads as "not merged"
+// and silently leaves that stretch out of the mileage total, since two
+// trails that meet at roughly the same trailhead almost never share an
+// exact coordinate in the source map data.
+function editorFindNearbyVertex(editor, latlng, radiusPx) {
+  const tapPoint = editor.map.latLngToContainerPoint(latlng);
+  let best = null;
+  editor.segments.forEach((seg) => {
+    seg.forEach((p) => {
+      const pt = editor.map.latLngToContainerPoint(p);
+      const d = Math.hypot(pt.x - tapPoint.x, pt.y - tapPoint.y);
+      if (d <= radiusPx && (!best || d < best.dist)) best = { point: p, dist: d };
+    });
+  });
+  return best ? best.point : null;
+}
+
 function editorClick(editor, latlng) {
-  const point = [latlng.lat, latlng.lng];
   if (editor.mode === "pencil") {
+    const SNAP_RADIUS_PX = 20;
+    const nearby = editorFindNearbyVertex(editor, latlng, SNAP_RADIUS_PX);
+    const point = nearby ? [nearby[0], nearby[1]] : [latlng.lat, latlng.lng];
     if (editor.segments.length === 0 || editor.freshSegment) {
       editor.segments.push([]);
       editor.freshSegment = false;
