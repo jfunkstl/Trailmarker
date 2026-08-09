@@ -358,6 +358,59 @@ app.get("/api/trails", async (req, res) => {
       } catch (usgsErr) {
         console.error("USGS National Trails merge failed:", usgsErr.message || usgsErr);
       }
+
+      // Colorado Trail Explorer (COTREX) — a Colorado Parks & Wildlife layer
+      // aggregating ~40,000 miles of trails from 230+ local land managers
+      // (USFS, BLM, county, and city sources) into one statewide dataset.
+      // Colorado-only and name-filtered for the same reasons as NPS/USGS
+      // above: no clean way to scan it for an entire state cheaply, and it
+      // would crowd out other states' results if run unconditionally.
+      // Endpoint verified live and queryable before writing this (96,029
+      // trail records; see project notes on the earlier USGS EPQS mistake
+      // — this one wasn't guessed at).
+      if (iso === "US-CO") {
+        try {
+          const cotrexWhere = `UPPER(name) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%')`;
+          const cotrexUrl = "https://gis.colorado.gov/public/rest/services/OIT/Colorado_State_Basemap/MapServer/40/query"
+            + `?where=${encodeURIComponent(cotrexWhere)}&outFields=${encodeURIComponent("name,surface,length_mi_,manager,dogs,min_elevat,max_elevat,url")}&outSR=4326&f=geojson`;
+          const cotrexResp = await fetch(cotrexUrl, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+          if (cotrexResp.ok) {
+            const cotrexData = await cotrexResp.json();
+            (cotrexData.features || []).forEach((f) => {
+              const name = f.properties.name;
+              if (!name || byName.has(name)) return;
+              const geom = f.geometry;
+              if (!geom) return;
+              // GeoJSON LineString/MultiLineString coords are [lon,lat] — flip to [lat,lon],
+              // same as the NPS/USGS handling above.
+              const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+              const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+              if (segCoordsList.length === 0) return;
+              // Computed from the actual returned geometry rather than the
+              // layer's own length_mi_ field, to stay consistent with how
+              // every other source in this app measures distance.
+              const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+              const descParts = ["From Colorado's COTREX trail database."];
+              if (f.properties.manager) descParts.push(`Managed by ${f.properties.manager}.`);
+              if (f.properties.dogs) descParts.push(`Dogs: ${f.properties.dogs}.`);
+              byName.set(name, {
+                name,
+                distance_km: lenKm,
+                segments: segCoordsList.length,
+                lat: segCoordsList[0][0][0],
+                lon: segCoordsList[0][0][1],
+                tags: { surface: f.properties.surface || null, description: descParts.join(" ") },
+                segmentsGeom: segCoordsList,
+              });
+            });
+          } else {
+            console.error("COTREX trails lookup returned", cotrexResp.status);
+          }
+        } catch (cotrexErr) {
+          console.error("COTREX trails merge failed:", cotrexErr.message || cotrexErr);
+          // Not fatal — OSM/NPS/USGS results still get returned below.
+        }
+      }
     }
 
     const MAX_POINTS_PER_TRAIL = 400;
