@@ -992,16 +992,6 @@ app.get("/api/map-pins", async (req, res) => {
       runOverpassQuery(areasQuery).catch((err) => { console.error("Map pins: areas query failed:", err.message || err); return { elements: [] }; }),
     ]);
 
-    // Temporary diagnostic — remove once bbox queries are confirmed stable.
-    // Shows raw element counts straight from Overpass, before any of our
-    // own name/geometry filtering runs, so an empty final result can be
-    // told apart from "Overpass returned nothing" vs "we filtered it out."
-    const debugCounts = {
-      trailsRawElements: (trailsData.elements || []).length,
-      parksRawElements: (parksData.elements || []).length,
-      areasRawElements: (areasData.elements || []).length,
-    };
-
     // ---- trails ----
     const byName = new Map();
     (trailsData.elements || []).forEach((el) => {
@@ -1102,7 +1092,7 @@ app.get("/api/map-pins", async (req, res) => {
 
     const responseData = { trails, parks, areas };
     cache.set(cacheKey, { data: responseData, expires: Date.now() + CACHE_TTL_MS });
-    res.json({ ...responseData, cached: false, debug: debugCounts });
+    res.json({ ...responseData, cached: false });
   } catch (err) {
     console.error("Map pins lookup failed:", err.message || err);
     res.status(502).json({ error: "Couldn't load trails and parks for this area right now — try again in a minute." });
