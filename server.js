@@ -946,11 +946,20 @@ app.get("/api/map-pins", async (req, res) => {
 
   const bbox = `${swLat},${swLon},${neLat},${neLon}`;
 
+  // Geo-filter placed immediately after the element type, before tag
+  // brackets — matching the exact ordering used by the proven-working
+  // trail queries above (around:/area.a), rather than the reverse order
+  // this endpoint originally shipped with. That reversed ordering is the
+  // suspected cause of an empty trails result during live testing:
+  // the exact-match park/area queries tolerated it, but the regex-based
+  // highway filter didn't return results with the filter trailing the
+  // bbox. Reordering here to match the known-good pattern rather than
+  // guessing at a different fix.
   const trailsQuery = `
     [out:json][timeout:25];
     (
-      way["highway"~"^(path|footway)$"]["name"](${bbox});
-      relation["route"~"^(hiking|foot)$"]["name"](${bbox});
+      way(${bbox})["highway"~"^(path|footway)$"]["name"];
+      relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
     );
     out tags geom;
   `.trim();
@@ -958,11 +967,11 @@ app.get("/api/map-pins", async (req, res) => {
   const parksQuery = `
     [out:json][timeout:25];
     (
-      way["leisure"="park"]["name"](${bbox});
-      way["boundary"="national_park"]["name"](${bbox});
-      relation["boundary"="national_park"]["name"](${bbox});
-      way["boundary"="protected_area"]["name"](${bbox});
-      relation["boundary"="protected_area"]["name"](${bbox});
+      way(${bbox})["leisure"="park"]["name"];
+      way(${bbox})["boundary"="national_park"]["name"];
+      relation(${bbox})["boundary"="national_park"]["name"];
+      way(${bbox})["boundary"="protected_area"]["name"];
+      relation(${bbox})["boundary"="protected_area"]["name"];
     );
     out tags center;
   `.trim();
@@ -970,8 +979,8 @@ app.get("/api/map-pins", async (req, res) => {
   const areasQuery = `
     [out:json][timeout:25];
     (
-      way["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"](${bbox});
-      relation["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"](${bbox});
+      way(${bbox})["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"];
+      relation(${bbox})["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"];
     );
     out tags center;
   `.trim();
@@ -982,6 +991,16 @@ app.get("/api/map-pins", async (req, res) => {
       runOverpassQuery(parksQuery).catch((err) => { console.error("Map pins: parks query failed:", err.message || err); return { elements: [] }; }),
       runOverpassQuery(areasQuery).catch((err) => { console.error("Map pins: areas query failed:", err.message || err); return { elements: [] }; }),
     ]);
+
+    // Temporary diagnostic — remove once bbox queries are confirmed stable.
+    // Shows raw element counts straight from Overpass, before any of our
+    // own name/geometry filtering runs, so an empty final result can be
+    // told apart from "Overpass returned nothing" vs "we filtered it out."
+    const debugCounts = {
+      trailsRawElements: (trailsData.elements || []).length,
+      parksRawElements: (parksData.elements || []).length,
+      areasRawElements: (areasData.elements || []).length,
+    };
 
     // ---- trails ----
     const byName = new Map();
@@ -1083,7 +1102,7 @@ app.get("/api/map-pins", async (req, res) => {
 
     const responseData = { trails, parks, areas };
     cache.set(cacheKey, { data: responseData, expires: Date.now() + CACHE_TTL_MS });
-    res.json({ ...responseData, cached: false });
+    res.json({ ...responseData, cached: false, debug: debugCounts });
   } catch (err) {
     console.error("Map pins lookup failed:", err.message || err);
     res.status(502).json({ error: "Couldn't load trails and parks for this area right now — try again in a minute." });
