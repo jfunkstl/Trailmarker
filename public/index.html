@@ -75,12 +75,22 @@
       <div class="flex items-center justify-between mb-4">
         <h2 class="font-display text-2xl">Discover</h2>
         <div class="flex bg-chipbg rounded-full p-0.5" id="viewToggle">
-          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="search">Search</button>
+          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="map">Map</button>
+          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="search">Search</button>
           <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="saved">Saved</button>
         </div>
       </div>
 
-      <div id="discoverSearch">
+      <!-- Map-first landing view -->
+      <div id="discoverMapView">
+        <div id="discoverMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
+          <div id="discoverMap" class="w-full h-[65vh] bg-card"></div>
+          <button id="searchThisAreaBtn" class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-[500] rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 shadow-lg active:scale-95 transition">Search this area</button>
+        </div>
+        <p id="discoverMapHint" class="text-xs opacity-60 mt-2 text-center">Loading trails and parks…</p>
+      </div>
+
+      <div id="discoverSearch" class="hidden">
         <div class="segmented-small flex w-fit bg-chipbg rounded-full p-0.5 mb-2.5" id="searchModeToggle">
           <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="name">Trail name</button>
           <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="city">City</button>
