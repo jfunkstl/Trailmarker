@@ -1,3 +1,35 @@
+// ---------- on-page error reporting ----------
+// Registered before anything else runs. If any uncaught error occurs
+// anywhere in this file, it displays the actual error message + line
+// number directly on screen (as a red banner) instead of failing silently
+// with no visible symptom other than "nothing works." This is the fastest
+// way to get a real error message off a phone with no console access —
+// screenshot the red banner if one ever appears.
+window.addEventListener("error", (e) => {
+  const msg = `JS Error: ${e.message} (line ${e.lineno}, col ${e.colno})`;
+  console.error(msg, e.error);
+  let banner = document.getElementById("jsErrorBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "jsErrorBanner";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#8a2f22;color:#fff;padding:10px 14px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;";
+    document.body.appendChild(banner);
+  }
+  banner.textContent = msg;
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const msg = `Unhandled promise rejection: ${e.reason && e.reason.message ? e.reason.message : e.reason}`;
+  console.error(msg, e.reason);
+  let banner = document.getElementById("jsErrorBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "jsErrorBanner";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#8a2f22;color:#fff;padding:10px 14px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;";
+    document.body.appendChild(banner);
+  }
+  banner.textContent = msg;
+});
+
 // ---------- offline support ----------
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -2083,47 +2115,3 @@ async function runSearch() {
     : `Searching live OpenStreetMap data for ${state}…`;
   document.getElementById("results").innerHTML = "";
   searchBtn.disabled = true;
-
-  try {
-    const params = new URLSearchParams({ state });
-    if (searchMode === "city") {
-      params.set("near", q);
-    } else if (q) {
-      params.set("q", q);
-    }
-    const res = await fetch(`/api/trails?${params.toString()}`);
-    const data = await res.json();
-    if (!res.ok) {
-      status.textContent = `Error: ${data.error || "something went wrong"}`;
-      return;
-    }
-    lastResults = data.trails;
-    const locationLabel = searchMode === "city" ? `near ${q}` : `in ${state}`;
-    status.textContent = `${data.trails.length} named trail${data.trails.length !== 1 ? "s" : ""} found ${locationLabel}${data.cached ? " (cached)" : ""}. Distances are approximate, computed from mapped geometry.`;
-    renderSearchResults(lastResults);
-  } catch (err) {
-    status.textContent = "Couldn't reach the server. Is it running?";
-    console.error(err);
-  } finally {
-    searchBtn.disabled = false;
-  }
-}
-
-document.getElementById("searchBtn").addEventListener("click", runSearch);
-document.getElementById("query").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
-document.querySelectorAll("#difficultyFilters .chip").forEach((chip) => {
-  chip.addEventListener("click", () => {
-    document.querySelectorAll("#difficultyFilters .chip").forEach((c) => c.classList.remove("active"));
-    chip.classList.add("active");
-    currentDifficulty = chip.dataset.difficulty;
-    renderSearchResults(lastResults);
-  });
-});
-
-// ---- saved / wishlist ----
-function saveToWishlist(trail) {
-  if (wishlist.some((w) => w.name === trail.name)) { showToast("Already on your list"); return; }
-  wishlist = [{
-    id: uid(),
-    name: trail.name,
-    
