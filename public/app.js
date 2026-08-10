@@ -306,23 +306,71 @@ function updateStatLine() {
 }
 
 // ---------- tab switching ----------
+// Small helper used throughout the new map-view wiring: attaches a click
+// listener only if the element actually exists, logging a clear console
+// error instead of throwing. A single missing/mismatched element used to
+// be able to crash the whole script at load time (an uncaught exception in
+// top-level code halts everything after it) — this contains that failure
+// to just the one broken feature instead of taking down every button.
+function safeOnClick(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.error(`Trailseeker: expected element #${id} was not found in the page — index.html and app.js may be out of sync.`);
+    return;
+  }
+  el.addEventListener("click", handler);
+}
+
 const tabs = ["discover", "create", "track", "journal"];
+
+// Shows/hides the full-bleed map landing layer vs. the normal header+nav+
+// content chrome. Only Discover's "map" sub-view uses the fullscreen
+// layer; every other tab and Discover's Search/Saved sub-views use the
+// normal chrome, same as before this redesign.
+function updateDiscoverMapVisibility() {
+  const showMapFullscreen = currentView === "map";
+  const fullscreen = document.getElementById("discoverMapFullscreen");
+  const chrome = document.getElementById("appChrome");
+  if (!fullscreen || !chrome) {
+    console.error("Trailseeker: #discoverMapFullscreen or #appChrome missing — check index.html is up to date.");
+    return;
+  }
+  fullscreen.classList.toggle("hidden", !showMapFullscreen);
+  chrome.classList.toggle("hidden", showMapFullscreen);
+  if (showMapFullscreen) {
+    setTimeout(() => {
+      ensureDiscoverMap();
+      if (discoverMap) discoverMap.invalidateSize();
+      updateSearchThisAreaButton();
+    }, 50);
+  }
+}
+
 function switchTab(tab) {
   tabs.forEach((t) => {
-    document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
+    const section = document.getElementById(`tab-${t}`);
+    if (section) section.classList.toggle("hidden", t !== tab);
   });
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
   if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
-  if (tab === "discover" && currentView === "map") setTimeout(() => {
-    ensureDiscoverMap();
-    discoverMap.invalidateSize();
-    updateSearchThisAreaButton();
-  }, 50);
+  if (tab === "discover") {
+    updateDiscoverMapVisibility();
+  } else {
+    // Leaving Discover entirely — always show normal chrome for other tabs,
+    // even if Discover's own sub-view is currently set to "map".
+    const fullscreen = document.getElementById("discoverMapFullscreen");
+    const chrome = document.getElementById("appChrome");
+    if (fullscreen) fullscreen.classList.add("hidden");
+    if (chrome) chrome.classList.remove("hidden");
+  }
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
+  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+});
+document.querySelectorAll(".map-nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
@@ -1023,24 +1071,28 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
   });
 });
 
-document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("#viewToggle .seg").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    currentView = btn.dataset.view;
-    document.getElementById("discoverMapView").classList.toggle("hidden", currentView !== "map");
-    document.getElementById("discoverSearch").classList.toggle("hidden", currentView !== "search");
-    document.getElementById("discoverSaved").classList.toggle("hidden", currentView !== "saved");
-    if (currentView === "saved") renderSaved();
-    if (currentView === "map") {
-      setTimeout(() => {
-        ensureDiscoverMap();
-        discoverMap.invalidateSize();
-        updateSearchThisAreaButton();
-      }, 50);
-    }
+// Shared by the toggle row, the floating map-view search icon, and (later)
+// anywhere else that needs to jump between Discover's Map/Search/Saved
+// sub-views — keeps all the entry points in sync instead of duplicating
+// this logic in multiple click handlers.
+function setDiscoverView(view) {
+  currentView = view;
+  document.querySelectorAll("#viewToggle .seg").forEach((b) => {
+    b.classList.toggle("active", b.dataset.view === view);
   });
+  const searchEl = document.getElementById("discoverSearch");
+  const savedEl = document.getElementById("discoverSaved");
+  if (searchEl) searchEl.classList.toggle("hidden", view !== "search");
+  if (savedEl) savedEl.classList.toggle("hidden", view !== "saved");
+  if (view === "saved") renderSaved();
+  updateDiscoverMapVisibility();
+}
+
+document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
+  btn.addEventListener("click", () => setDiscoverView(btn.dataset.view));
 });
+
+safeOnClick("mapSearchIconBtn", () => setDiscoverView("search"));
 
 // ---- Map-first Discover landing view ----
 // Deliberately does NOT fetch on every pan/zoom — Overpass is free, shared
@@ -1074,6 +1126,11 @@ const AREA_PIN_ICON = L.divIcon({
 
 function ensureDiscoverMap() {
   if (discoverMap) return discoverMap;
+  const mapEl = document.getElementById("discoverMap");
+  if (!mapEl) {
+    console.error("Trailseeker: #discoverMap not found — check index.html is up to date.");
+    return null;
+  }
   discoverMap = L.map("discoverMap", { attributionControl: false }).setView(DISCOVER_MAP_DEFAULT_CENTER, DISCOVER_MAP_DEFAULT_ZOOM);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(discoverMap);
   discoverMapMarkers = L.layerGroup().addTo(discoverMap);
@@ -1091,7 +1148,7 @@ function discoverMapBoundsSpan(bounds) {
 function updateSearchThisAreaButton() {
   const btn = document.getElementById("searchThisAreaBtn");
   const hint = document.getElementById("discoverMapHint");
-  if (!discoverMap) return;
+  if (!discoverMap || !btn || !hint) return;
   const { latSpan, lonSpan } = discoverMapBoundsSpan(discoverMap.getBounds());
   const tooWide = latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG;
   if (tooWide) {
@@ -1114,6 +1171,10 @@ async function loadMapPins() {
 
   const hint = document.getElementById("discoverMapHint");
   const btn = document.getElementById("searchThisAreaBtn");
+  if (!hint || !btn) {
+    console.error("Trailseeker: #discoverMapHint or #searchThisAreaBtn not found — check index.html is up to date.");
+    return;
+  }
   hint.textContent = "Loading trails and parks…";
   hint.classList.remove("hidden");
   btn.classList.add("hidden");
@@ -1190,7 +1251,7 @@ function renderMapPins(data) {
   });
 }
 
-document.getElementById("searchThisAreaBtn").addEventListener("click", loadMapPins);
+safeOnClick("searchThisAreaBtn", loadMapPins);
 
 
 
@@ -2065,47 +2126,4 @@ function saveToWishlist(trail) {
   wishlist = [{
     id: uid(),
     name: trail.name,
-    location: trail.state,
-    notes: `${(trail.distance_km * 0.621371).toFixed(1)} mi · ${trail.difficulty}`,
-    osm_url: trail.osm_url,
-    geometry: trail.geometry || null,
-    lat: trail.lat,
-    lon: trail.lon,
-  }, ...wishlist];
-  saveWishlist(wishlist);
-  showToast("Saved to your list");
-  populateTrailPicker();
-  populateCreateBasePicker();
-}
-
-function renderSaved() {
-  const el = document.getElementById("savedList");
-  if (wishlist.length === 0) {
-    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">Nothing saved yet — search a state and tap Save on a trail.</div>`;
-    return;
-  }
-  el.innerHTML = wishlist.map((w) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
-      <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
-      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
-      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(w.location || "")}</p>
-      ${w.notes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(w.notes)}</p>` : ""}
-      <div class="flex gap-2 mt-3 flex-wrap">
-        ${w.geometry ? `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-track-wish="${w.id}">Track this</button>` : ""}
-        <button class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition" data-complete-wish="${w.id}">Mark as hiked</button>
-        ${w.custom && w.geometry
-          ? w.addedToDb
-            ? `<span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium self-center">✓ In shared database</span>`
-            : `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-submit-wish="${w.id}">Add to database</button>`
-          : ""}
-        ${w.osm_url ? `<a class="block text-sm text-pine underline mt-2" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
-      </div>
-    </div>
-  `).join("");
-
-  el.querySelectorAll("[data-submit-wish]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const w = wishlist.find((x) => x.id === btn.dataset.submitWish);
-      btn.textContent = "Adding…";
-      btn.disabled = true;
-     
+    
