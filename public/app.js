@@ -316,6 +316,11 @@ function switchTab(tab) {
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
   if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
+  if (tab === "discover" && currentView === "map") setTimeout(() => {
+    ensureDiscoverMap();
+    discoverMap.invalidateSize();
+    updateSearchThisAreaButton();
+  }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -997,7 +1002,7 @@ document.getElementById("addHikeBtn").addEventListener("click", () => {
 });
 
 // ================= DISCOVER =================
-let currentView = "search";
+let currentView = "map";
 let currentDifficulty = "All";
 let lastResults = [];
 let searchMode = "name";
@@ -1023,11 +1028,171 @@ document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
     document.querySelectorAll("#viewToggle .seg").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     currentView = btn.dataset.view;
+    document.getElementById("discoverMapView").classList.toggle("hidden", currentView !== "map");
     document.getElementById("discoverSearch").classList.toggle("hidden", currentView !== "search");
     document.getElementById("discoverSaved").classList.toggle("hidden", currentView !== "saved");
     if (currentView === "saved") renderSaved();
+    if (currentView === "map") {
+      setTimeout(() => {
+        ensureDiscoverMap();
+        discoverMap.invalidateSize();
+        updateSearchThisAreaButton();
+      }, 50);
+    }
   });
 });
+
+// ---- Map-first Discover landing view ----
+// Deliberately does NOT fetch on every pan/zoom — Overpass is free, shared
+// infrastructure and rate-limits aggressively. Pins load on initial view
+// (if already zoomed in enough) and via the "Search this area" button,
+// same pattern most map apps use for exactly this reason.
+let discoverMap = null;
+let discoverMapMarkers = null;
+let lastFetchedBounds = null;
+const MAP_PINS_MAX_SPAN_DEG = 1.5; // mirrors the server-side guard in /api/map-pins
+
+// Colorado Front Range as a starting view — provisional default that
+// happens to have good COTREX/OSM trail coverage so first load shows real
+// pins immediately rather than an empty "zoom in" prompt. Worth revisiting
+// later (e.g. geolocation-based centering) if that'd serve users better.
+const DISCOVER_MAP_DEFAULT_CENTER = [39.1, -105.4];
+const DISCOVER_MAP_DEFAULT_ZOOM = 10;
+
+const TRAIL_PIN_ICON = L.divIcon({
+  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#1B4332;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🥾</span></div>`,
+  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
+});
+const PARK_PIN_ICON = L.divIcon({
+  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#E3B23C;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🏞️</span></div>`,
+  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
+});
+const AREA_PIN_ICON = L.divIcon({
+  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#8a2f22;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🌲</span></div>`,
+  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
+});
+
+function ensureDiscoverMap() {
+  if (discoverMap) return discoverMap;
+  discoverMap = L.map("discoverMap", { attributionControl: false }).setView(DISCOVER_MAP_DEFAULT_CENTER, DISCOVER_MAP_DEFAULT_ZOOM);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(discoverMap);
+  discoverMapMarkers = L.layerGroup().addTo(discoverMap);
+  discoverMap.on("moveend zoomend", updateSearchThisAreaButton);
+  // First load: if the default view is already zoomed in enough, load pins
+  // right away instead of making the person tap the button unnecessarily.
+  setTimeout(() => loadMapPins(), 100);
+  return discoverMap;
+}
+
+function discoverMapBoundsSpan(bounds) {
+  return { latSpan: bounds.getNorth() - bounds.getSouth(), lonSpan: bounds.getEast() - bounds.getWest() };
+}
+
+function updateSearchThisAreaButton() {
+  const btn = document.getElementById("searchThisAreaBtn");
+  const hint = document.getElementById("discoverMapHint");
+  if (!discoverMap) return;
+  const { latSpan, lonSpan } = discoverMapBoundsSpan(discoverMap.getBounds());
+  const tooWide = latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG;
+  if (tooWide) {
+    btn.classList.add("hidden");
+    hint.textContent = "Zoom in a bit more to load trails and parks here.";
+    hint.classList.remove("hidden");
+  } else {
+    btn.classList.remove("hidden");
+  }
+}
+
+async function loadMapPins() {
+  if (!discoverMap) return;
+  const bounds = discoverMap.getBounds();
+  const { latSpan, lonSpan } = discoverMapBoundsSpan(bounds);
+  if (latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG) {
+    updateSearchThisAreaButton();
+    return;
+  }
+
+  const hint = document.getElementById("discoverMapHint");
+  const btn = document.getElementById("searchThisAreaBtn");
+  hint.textContent = "Loading trails and parks…";
+  hint.classList.remove("hidden");
+  btn.classList.add("hidden");
+
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+
+  try {
+    const params = new URLSearchParams({ swLat: sw.lat, swLon: sw.lng, neLat: ne.lat, neLon: ne.lng });
+    const resp = await fetch(`/api/map-pins?${params.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok) {
+      hint.textContent = data.error || "Couldn't load this area.";
+      btn.classList.remove("hidden");
+      return;
+    }
+    renderMapPins(data);
+    lastFetchedBounds = bounds;
+    const parkAndAreaCount = data.parks.length + data.areas.length;
+    hint.textContent = (data.trails.length === 0 && parkAndAreaCount === 0)
+      ? "Nothing found in this area. Try panning or zooming out a bit."
+      : `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} · ${parkAndAreaCount} park${parkAndAreaCount !== 1 ? "s" : ""}/area${parkAndAreaCount !== 1 ? "s" : ""} shown.`;
+  } catch (err) {
+    console.error("Map pins load failed:", err);
+    hint.textContent = "Couldn't reach the server. Is it running?";
+    btn.classList.remove("hidden");
+  }
+}
+
+function renderMapPins(data) {
+  discoverMapMarkers.clearLayers();
+
+  data.trails.forEach((t) => {
+    const marker = L.marker([t.lat, t.lon], { icon: TRAIL_PIN_ICON }).addTo(discoverMapMarkers);
+    marker.bindTooltip(`${escapeHtml(t.name)} · ${(t.distance_km * 0.621371).toFixed(1)} mi`, { direction: "top", offset: [0, -28] });
+    marker.on("click", () => openTrailDetail({
+      name: t.name,
+      state: "",
+      distance_km: t.distance_km,
+      difficulty: t.difficulty,
+      surface: t.surface,
+      segments: t.segments,
+      geometry: t.geometry,
+      lat: t.lat,
+      lon: t.lon,
+      osm_url: null,
+    }));
+  });
+
+  data.parks.forEach((p) => {
+    const marker = L.marker([p.lat, p.lon], { icon: PARK_PIN_ICON }).addTo(discoverMapMarkers);
+    marker.bindTooltip(escapeHtml(p.name), { direction: "top", offset: [0, -28] });
+    marker.on("click", () => openParkDetail({
+      name: p.name,
+      state: "",
+      kind: p.kind,
+      lat: p.lat,
+      lon: p.lon,
+      osm_url: `https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=13/${p.lat}/${p.lon}`,
+    }));
+  });
+
+  data.areas.forEach((a) => {
+    const marker = L.marker([a.lat, a.lon], { icon: AREA_PIN_ICON }).addTo(discoverMapMarkers);
+    marker.bindTooltip(escapeHtml(a.name), { direction: "top", offset: [0, -28] });
+    marker.on("click", () => openParkDetail({
+      name: a.name,
+      state: "",
+      kind: a.kind,
+      lat: a.lat,
+      lon: a.lon,
+      osm_url: `https://www.openstreetmap.org/?mlat=${a.lat}&mlon=${a.lon}#map=12/${a.lat}/${a.lon}`,
+    }));
+  });
+}
+
+document.getElementById("searchThisAreaBtn").addEventListener("click", loadMapPins);
+
+
 
 let ALL_STATES = [];
 async function loadStates() {
@@ -1943,111 +2108,4 @@ function renderSaved() {
       const w = wishlist.find((x) => x.id === btn.dataset.submitWish);
       btn.textContent = "Adding…";
       btn.disabled = true;
-      try {
-        const resp = await fetch("/api/community-trails", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: w.name, state: w.location, geometry: w.geometry,
-            distance_km: w.distance_km || 0, notes: w.notes, lat: w.lat, lon: w.lon,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok) {
-          showToast(data.error || "Couldn't add to the shared database");
-          btn.textContent = "Add to database";
-          btn.disabled = false;
-          return;
-        }
-        w.addedToDb = true;
-        saveWishlist(wishlist);
-        showToast(`${w.name} added to the shared database — now searchable by everyone`);
-        renderSaved();
-      } catch (err) {
-        console.error(err);
-        showToast("Couldn't reach the server");
-        btn.textContent = "Add to database";
-        btn.disabled = false;
-      }
-    });
-  });
-
-  el.querySelectorAll("[data-detail-wish]").forEach((el2) => {
-    el2.addEventListener("click", () => {
-      const w = wishlist.find((x) => x.id === el2.dataset.detailWish);
-      openTrailDetail({
-        name: w.name, state: w.location, distance_km: null, difficulty: null,
-        surface: null, segments: null, geometry: w.geometry, lat: w.lat, lon: w.lon,
-        osm_url: w.osm_url, savedNotes: w.notes,
-      });
-    });
-  });
-  el.querySelectorAll("[data-delete-wish]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      wishlist = wishlist.filter((w) => w.id !== btn.dataset.deleteWish);
-      saveWishlist(wishlist);
-      renderSaved();
-      populateTrailPicker();
-      populateCreateBasePicker();
-    });
-  });
-  el.querySelectorAll("[data-complete-wish]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const trail = wishlist.find((w) => w.id === btn.dataset.completeWish);
-      openCompleteModal({ name: trail.name, state: trail.location, notes: trail.notes, wishId: trail.id });
-    });
-  });
-  el.querySelectorAll("[data-track-wish]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      switchTab("track");
-      document.getElementById("trailPicker").value = btn.dataset.trackWish;
-      selectTrailToFollow(btn.dataset.trackWish);
-    });
-  });
-}
-
-function openCompleteModal(trail) {
-  openModal(`Hiked: ${trail.name}`, `
-    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Date</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
-    <div class="flex gap-2.5">
-      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Distance (km)</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDist" type="number" step="0.1" value="${trail.distance_km ? trail.distance_km.toFixed(1) : ""}" /></label>
-      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Hours</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cH" type="number" placeholder="2" /></label>
-      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Min</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cM" type="number" placeholder="30" /></label>
-    </div>
-    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cNotes" rows="2" placeholder="${escapeHtml(trail.notes || "")}"></textarea></label>
-    <div class="flex gap-2 mt-4">
-      <button id="cSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Move to journal</button>
-    </div>
-  `);
-  document.getElementById("cSaveBtn").addEventListener("click", () => {
-    const date = document.getElementById("cDate").value;
-    const distMi = parseFloat(document.getElementById("cDist").value) || 0;
-    const h = parseInt(document.getElementById("cH").value) || 0;
-    const m = parseInt(document.getElementById("cM").value) || 0;
-    const notes = document.getElementById("cNotes").value.trim() || trail.notes || "";
-    hikes = [{ id: uid(), date: date ? new Date(date).toISOString() : new Date().toISOString(), name: trail.name, distance: distMi * 1609.34, duration: h * 3600 + m * 60, notes, path: null, source: "manual" }, ...hikes];
-    saveHikes(hikes);
-    if (trail.wishId) {
-      wishlist = wishlist.filter((w) => w.id !== trail.wishId);
-      saveWishlist(wishlist);
-    }
-    closeModal();
-    showToast("Moved to your journal");
-    renderJournal();
-    updateStatLine();
-    switchTab("journal");
-  });
-}
-
-// ---------- init ----------
-window.addEventListener("beforeunload", () => {
-  clearInterval(timerId);
-  if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
-});
-
-updateStatLine();
-renderJournal();
-loadStates();
-populateTrailPicker();
-populateCreateBasePicker();
-switchTab("discover");
+     
