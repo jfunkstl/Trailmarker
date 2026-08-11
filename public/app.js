@@ -1,13 +1,14 @@
 // ---------- on-page error reporting ----------
-// Registered before anything else runs. If any uncaught error occurs
-// anywhere in this file, it displays the actual error message + line
-// number directly on screen (as a red banner) instead of failing silently
-// with no visible symptom other than "nothing works." This is the fastest
-// way to get a real error message off a phone with no console access —
-// screenshot the red banner if one ever appears.
-window.addEventListener("error", (e) => {
-  const msg = `JS Error: ${e.message} (line ${e.lineno}, col ${e.colno})`;
-  console.error(msg, e.error);
+// Registered before anything else runs. Shows a red banner across the top
+// of the screen for ANY problem this app can detect — a thrown JS error, an
+// unhandled promise rejection, OR (critically) an expected HTML element
+// that's missing, which previously only logged to console.error and did
+// nothing else. A silent console.error is invisible on a phone with no
+// devtools access, and produces exactly the symptom "nothing happens, no
+// crash, no visible error" — this makes that class of problem impossible
+// to miss instead.
+function showFatalError(msg) {
+  console.error(msg);
   let banner = document.getElementById("jsErrorBanner");
   if (!banner) {
     banner = document.createElement("div");
@@ -15,20 +16,32 @@ window.addEventListener("error", (e) => {
     banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#8a2f22;color:#fff;padding:10px 14px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;";
     document.body.appendChild(banner);
   }
-  banner.textContent = msg;
+  banner.textContent = banner.textContent ? `${banner.textContent}\n---\n${msg}` : msg;
+}
+window.addEventListener("error", (e) => {
+  showFatalError(`JS Error: ${e.message} (line ${e.lineno}, col ${e.colno})`);
 });
 window.addEventListener("unhandledrejection", (e) => {
-  const msg = `Unhandled promise rejection: ${e.reason && e.reason.message ? e.reason.message : e.reason}`;
-  console.error(msg, e.reason);
-  let banner = document.getElementById("jsErrorBanner");
-  if (!banner) {
-    banner = document.createElement("div");
-    banner.id = "jsErrorBanner";
-    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#8a2f22;color:#fff;padding:10px 14px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;";
-    document.body.appendChild(banner);
-  }
-  banner.textContent = msg;
+  showFatalError(`Unhandled promise rejection: ${e.reason && e.reason.message ? e.reason.message : e.reason}`);
 });
+
+// Immediate startup check — verifies every element this redesign depends on
+// actually exists the instant the page loads, rather than only surfacing a
+// problem later when some specific function happens to be called. If
+// index.html and app.js are ever out of sync (stale cache, partial deploy,
+// etc.) this shows a banner within the first moment of page load instead of
+// presenting as "nothing happens, nothing works, no visible error."
+(function checkRequiredElements() {
+  const required = [
+    "discoverMapFullscreen", "appChrome", "discoverMap", "searchThisAreaBtn",
+    "discoverMapHint", "mapSearchIconBtn", "tab-discover", "tab-create",
+    "tab-track", "tab-journal", "viewToggle", "discoverSearch", "discoverSaved",
+  ];
+  const missing = required.filter((id) => !document.getElementById(id));
+  if (missing.length > 0) {
+    showFatalError(`Startup check failed — index.html is missing: ${missing.map((id) => "#" + id).join(", ")}. This page is running an old/mismatched index.html — try a hard refresh or clear this site's data completely (not just "clear cache").`);
+  }
+})();
 
 // ---------- offline support ----------
 if ("serviceWorker" in navigator) {
@@ -347,7 +360,7 @@ function updateStatLine() {
 function safeOnClick(id, handler) {
   const el = document.getElementById(id);
   if (!el) {
-    console.error(`Trailseeker: expected element #${id} was not found in the page — index.html and app.js may be out of sync.`);
+    showFatalError(`Missing element #${id} — index.html and app.js are out of sync (try a hard refresh / clear site data).`);
     return;
   }
   el.addEventListener("click", handler);
@@ -364,7 +377,7 @@ function updateDiscoverMapVisibility() {
   const fullscreen = document.getElementById("discoverMapFullscreen");
   const chrome = document.getElementById("appChrome");
   if (!fullscreen || !chrome) {
-    console.error("Trailseeker: #discoverMapFullscreen or #appChrome missing — check index.html is up to date.");
+    showFatalError("Missing #discoverMapFullscreen or #appChrome — index.html and app.js are out of sync (try a hard refresh / clear site data).");
     return;
   }
   fullscreen.classList.toggle("hidden", !showMapFullscreen);
@@ -1160,7 +1173,7 @@ function ensureDiscoverMap() {
   if (discoverMap) return discoverMap;
   const mapEl = document.getElementById("discoverMap");
   if (!mapEl) {
-    console.error("Trailseeker: #discoverMap not found — check index.html is up to date.");
+    showFatalError("Missing #discoverMap — index.html and app.js are out of sync (try a hard refresh / clear site data).");
     return null;
   }
   discoverMap = L.map("discoverMap", { attributionControl: false }).setView(DISCOVER_MAP_DEFAULT_CENTER, DISCOVER_MAP_DEFAULT_ZOOM);
@@ -1204,7 +1217,7 @@ async function loadMapPins() {
   const hint = document.getElementById("discoverMapHint");
   const btn = document.getElementById("searchThisAreaBtn");
   if (!hint || !btn) {
-    console.error("Trailseeker: #discoverMapHint or #searchThisAreaBtn not found — check index.html is up to date.");
+    showFatalError("Missing #discoverMapHint or #searchThisAreaBtn — index.html and app.js are out of sync (try a hard refresh / clear site data).");
     return;
   }
   hint.textContent = "Loading trails and parks…";
@@ -1216,7 +1229,18 @@ async function loadMapPins() {
 
   try {
     const params = new URLSearchParams({ swLat: sw.lat, swLon: sw.lng, neLat: ne.lat, neLon: ne.lng });
-    const resp = await fetch(`/api/map-pins?${params.toString()}`);
+    // Render's free tier can take 30-60s to wake from idle. Without a
+    // timeout, a slow/hanging first request leaves "Loading…" stuck with
+    // no visible signal that anything is wrong — this guarantees a message
+    // appears either way instead of hanging indefinitely.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    let resp;
+    try {
+      resp = await fetch(`/api/map-pins?${params.toString()}`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     const data = await resp.json();
     if (!resp.ok) {
       hint.textContent = data.error || "Couldn't load this area.";
@@ -1231,7 +1255,9 @@ async function loadMapPins() {
       : `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} · ${parkAndAreaCount} park${parkAndAreaCount !== 1 ? "s" : ""}/area${parkAndAreaCount !== 1 ? "s" : ""} shown.`;
   } catch (err) {
     console.error("Map pins load failed:", err);
-    hint.textContent = "Couldn't reach the server. Is it running?";
+    hint.textContent = err.name === "AbortError"
+      ? "Timed out waiting for the server (it may be waking up from idle) — tap Search this area to retry."
+      : "Couldn't reach the server. Is it running?";
     btn.classList.remove("hidden");
   }
 }
@@ -2072,46 +2098,4 @@ async function runSearch() {
         return;
       }
       lastResults = data.areas;
-      status.textContent = `${data.areas.length} area${data.areas.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}.`;
-      renderRecConsResults(lastResults);
-    } catch (err) {
-      status.textContent = "Couldn't reach the server. Is it running?";
-      console.error(err);
-    } finally {
-      searchBtn.disabled = false;
-    }
-    return;
-  }
-
-  if (searchMode === "usa") {
-    if (!q || q.length < 3) {
-      status.textContent = "Enter at least 3 characters of a trail name (e.g. Appalachian Trail).";
-      return;
-    }
-    status.textContent = `Searching nationwide for "${q}"…`;
-    document.getElementById("results").innerHTML = "";
-    searchBtn.disabled = true;
-    try {
-      const res = await fetch(`/api/usa-trails?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        status.textContent = `Error: ${data.error || "something went wrong"}`;
-        return;
-      }
-      lastResults = data.trails;
-      status.textContent = `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} found nationwide${data.cached ? " (cached)" : ""}.`;
-      renderSearchResults(lastResults);
-    } catch (err) {
-      status.textContent = "Couldn't reach the server. Is it running?";
-      console.error(err);
-    } finally {
-      searchBtn.disabled = false;
-    }
-    return;
-  }
-
-  status.textContent = searchMode === "city"
-    ? `Finding trails near ${q}, ${state}…`
-    : `Searching live OpenStreetMap data for ${state}…`;
-  document.getElementById("results").innerHTML = "";
-  searchBtn.disabled = true;
+ 
