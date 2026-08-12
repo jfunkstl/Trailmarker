@@ -37,6 +37,25 @@
 </head>
 <body class="bg-paper text-ink font-sans relative pb-6">
 
+  <!-- BULLETPROOF SANITY CHECK — has zero dependency on anything else on this
+       page. If JavaScript runs AT ALL, this red bar and this test button both
+       disappear/change within 1 second of load, before any other script
+       (Leaflet, app.js, etc.) is even requested. If this bar is still here
+       and the button doesn't respond, the problem is completely outside
+       this app's code (browser JS disabled, an extension, a network policy
+       blocking script execution) — not a bug in Trailseeker. -->
+  <div id="jsSanityBar" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c0392b;color:#fff;padding:12px;text-align:center;font-family:sans-serif;font-size:14px;font-weight:bold;">
+    ⚠️ JAVASCRIPT IS NOT RUNNING ON THIS PAGE ⚠️
+  </div>
+  <div style="position:fixed;top:50px;left:0;right:0;z-index:99999;text-align:center;">
+    <button id="jsSanityBtn" onclick="this.textContent='✅ TAP WORKED — JS click events ARE working'; this.style.background='#1B4332';" style="background:#c0392b;color:#fff;border:none;padding:10px 16px;border-radius:8px;font-size:13px;">
+      Tap me to test click events
+    </button>
+  </div>
+  <script>
+    document.getElementById("jsSanityBar").remove();
+  </script>
+
   <header class="relative overflow-hidden rounded-b-[28px] px-4 pt-9 pb-7 text-center bg-gradient-to-b from-[#2B2E4A] via-[#7A5570] via-45% to-[#E3B23C]">
     <svg class="absolute inset-0 w-full h-full" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
       <polygon points="0,140 0,70 60,20 120,80 170,35 230,90 280,45 340,85 400,55 400,140" fill="#6b5a7a" opacity="0.85"/>
