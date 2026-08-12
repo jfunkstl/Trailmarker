@@ -33,9 +33,9 @@ window.addEventListener("unhandledrejection", (e) => {
 // presenting as "nothing happens, nothing works, no visible error."
 (function checkRequiredElements() {
   const required = [
-    "discoverMapFullscreen", "appChrome", "discoverMap", "searchThisAreaBtn",
-    "discoverMapHint", "mapSearchIconBtn", "tab-discover", "tab-create",
-    "tab-track", "tab-journal", "viewToggle", "discoverSearch", "discoverSaved",
+    "discoverMapView", "discoverMap", "searchThisAreaBtn", "discoverMapHint",
+    "tab-discover", "tab-create", "tab-track", "tab-journal",
+    "viewToggle", "discoverSearch", "discoverSaved",
   ];
   const missing = required.filter((id) => !document.getElementById(id));
   if (missing.length > 0) {
@@ -368,29 +368,6 @@ function safeOnClick(id, handler) {
 
 const tabs = ["discover", "create", "track", "journal"];
 
-// Shows/hides the full-bleed map landing layer vs. the normal header+nav+
-// content chrome. Only Discover's "map" sub-view uses the fullscreen
-// layer; every other tab and Discover's Search/Saved sub-views use the
-// normal chrome, same as before this redesign.
-function updateDiscoverMapVisibility() {
-  const showMapFullscreen = currentView === "map";
-  const fullscreen = document.getElementById("discoverMapFullscreen");
-  const chrome = document.getElementById("appChrome");
-  if (!fullscreen || !chrome) {
-    showFatalError("Missing #discoverMapFullscreen or #appChrome — index.html and app.js are out of sync (try a hard refresh / clear site data).");
-    return;
-  }
-  fullscreen.classList.toggle("hidden", !showMapFullscreen);
-  chrome.classList.toggle("hidden", showMapFullscreen);
-  if (showMapFullscreen) {
-    setTimeout(() => {
-      ensureDiscoverMap();
-      if (discoverMap) discoverMap.invalidateSize();
-      updateSearchThisAreaButton();
-    }, 50);
-  }
-}
-
 function switchTab(tab) {
   tabs.forEach((t) => {
     const section = document.getElementById(`tab-${t}`);
@@ -401,21 +378,13 @@ function switchTab(tab) {
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
   if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
-  if (tab === "discover") {
-    updateDiscoverMapVisibility();
-  } else {
-    // Leaving Discover entirely — always show normal chrome for other tabs,
-    // even if Discover's own sub-view is currently set to "map".
-    const fullscreen = document.getElementById("discoverMapFullscreen");
-    const chrome = document.getElementById("appChrome");
-    if (fullscreen) fullscreen.classList.add("hidden");
-    if (chrome) chrome.classList.remove("hidden");
-  }
+  if (tab === "discover" && currentView === "map") setTimeout(() => {
+    ensureDiscoverMap();
+    if (discoverMap) discoverMap.invalidateSize();
+    updateSearchThisAreaButton();
+  }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
-  btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-});
-document.querySelectorAll(".map-nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
@@ -1116,28 +1085,31 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
   });
 });
 
-// Shared by the toggle row, the floating map-view search icon, and (later)
-// anywhere else that needs to jump between Discover's Map/Search/Saved
-// sub-views — keeps all the entry points in sync instead of duplicating
-// this logic in multiple click handlers.
+// Shared by the toggle row — keeps the Map/Search/Saved sub-views in sync.
 function setDiscoverView(view) {
   currentView = view;
   document.querySelectorAll("#viewToggle .seg").forEach((b) => {
     b.classList.toggle("active", b.dataset.view === view);
   });
+  const mapEl = document.getElementById("discoverMapView");
   const searchEl = document.getElementById("discoverSearch");
   const savedEl = document.getElementById("discoverSaved");
+  if (mapEl) mapEl.classList.toggle("hidden", view !== "map");
   if (searchEl) searchEl.classList.toggle("hidden", view !== "search");
   if (savedEl) savedEl.classList.toggle("hidden", view !== "saved");
   if (view === "saved") renderSaved();
-  updateDiscoverMapVisibility();
+  if (view === "map") {
+    setTimeout(() => {
+      ensureDiscoverMap();
+      if (discoverMap) discoverMap.invalidateSize();
+      updateSearchThisAreaButton();
+    }, 50);
+  }
 }
 
 document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
   btn.addEventListener("click", () => setDiscoverView(btn.dataset.view));
 });
-
-safeOnClick("mapSearchIconBtn", () => setDiscoverView("search"));
 
 // ---- Map-first Discover landing view ----
 // Deliberately does NOT fetch on every pan/zoom — Overpass is free, shared
@@ -2098,4 +2070,42 @@ async function runSearch() {
         return;
       }
       lastResults = data.areas;
- 
+      status.textContent = `${data.areas.length} area${data.areas.length !== 1 ? "s" : ""} found in ${state}${data.cached ? " (cached)" : ""}.`;
+      renderRecConsResults(lastResults);
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Is it running?";
+      console.error(err);
+    } finally {
+      searchBtn.disabled = false;
+    }
+    return;
+  }
+
+  if (searchMode === "usa") {
+    if (!q || q.length < 3) {
+      status.textContent = "Enter at least 3 characters of a trail name (e.g. Appalachian Trail).";
+      return;
+    }
+    status.textContent = `Searching nationwide for "${q}"…`;
+    document.getElementById("results").innerHTML = "";
+    searchBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/usa-trails?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!res.ok) {
+        status.textContent = `Error: ${data.error || "something went wrong"}`;
+        return;
+      }
+      lastResults = data.trails;
+      status.textContent = `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} found nationwide${data.cached ? " (cached)" : ""}.`;
+      renderSearchResults(lastResults);
+    } catch (err) {
+      status.textContent = "Couldn't reach the server. Is it running?";
+      console.error(err);
+    } finally {
+      searchBtn.disabled = false;
+    }
+    return;
+  }
+
+  status.textContent = searchMode === "city
