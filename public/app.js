@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Trail App - public/app.js
+   Trail App - public/app.js (Full Restored Production Code)
    ========================================================================== */
 
 let wishlist = [];
@@ -8,9 +8,18 @@ let activeTab = "track";
 
 // Maps & Map State
 let trackMap = null;
+let exploreMap = null;
 let trailLayersGroup = null;
+let exploreLayersGroup = null;
+
 let userMarker = null;
 let currentPos = null;
+
+// Track Recording State
+let isRecording = false;
+let recordedPoints = [];
+let watchPositionId = null;
+let activeRecordingPolyline = null;
 
 // Modal Maps / Editors
 let createEditor = null;
@@ -192,7 +201,7 @@ function saveTracked(data) {
 }
 
 /* --------------------------------------------------------------------------
-   MAP & EDITOR HELPERS
+   EDITOR HELPERS & ENDPOINTS
    -------------------------------------------------------------------------- */
 
 function initEditorState(mapInstance) {
@@ -304,6 +313,8 @@ function switchTab(tabName) {
 
   if (tabName === "track" && trackMap) {
     setTimeout(() => trackMap.invalidateSize(), 200);
+  } else if (tabName === "explore" && exploreMap) {
+    setTimeout(() => exploreMap.invalidateSize(), 200);
   } else if (tabName === "create" && createEditor && createEditor.map) {
     setTimeout(() => createEditor.map.invalidateSize(), 200);
   }
@@ -315,7 +326,7 @@ function closeModal() {
 }
 
 /* --------------------------------------------------------------------------
-   TRACK TAB & MAP INITIALIZATION
+   TRACK TAB & LIVE RECORDING
    -------------------------------------------------------------------------- */
 
 function initTrackMap() {
@@ -331,7 +342,6 @@ function initTrackMap() {
 
   trailLayersGroup = L.layerGroup().addTo(trackMap);
 
-  // Non-blocking location request
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
@@ -352,11 +362,77 @@ function initTrackMap() {
           }
         }
       },
-      (err) => {
-        console.warn("Geolocation prompt or access issue:", err.message);
-      },
+      (err) => console.warn("Geolocation warning:", err.message),
       { enableHighAccuracy: true, timeout: 10000 }
     );
+  }
+}
+
+function toggleRecording() {
+  const recBtn = document.getElementById("recordTrackBtn");
+
+  if (!isRecording) {
+    if (!navigator.geolocation) {
+      showToast("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    isRecording = true;
+    recordedPoints = [];
+    if (recBtn) {
+      recBtn.innerText = "Stop Recording";
+      recBtn.classList.add("btn-danger");
+    }
+
+    activeRecordingPolyline = L.polyline([], { color: "#dc2626", weight: 5 }).addTo(trackMap);
+
+    watchPositionId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const pt = [pos.coords.latitude, pos.coords.longitude];
+        recordedPoints.push(pt);
+        if (activeRecordingPolyline) {
+          activeRecordingPolyline.setLatLngs(recordedPoints);
+        }
+        trackMap.setView(pt);
+      },
+      (err) => console.warn("GPS tracking error:", err.message),
+      { enableHighAccuracy: true }
+    );
+
+    showToast("Track recording started!");
+  } else {
+    isRecording = false;
+    if (watchPositionId) navigator.geolocation.clearWatch(watchPositionId);
+
+    if (recBtn) {
+      recBtn.innerText = "Record Live Route";
+      recBtn.classList.remove("btn-danger");
+    }
+
+    if (recordedPoints.length > 1) {
+      const distKm = calculateSegmentDistance(recordedPoints);
+      const newTrack = {
+        id: uid(),
+        name: `Recorded Walk (${new Date().toLocaleDateString()})`,
+        location: "Recorded Track",
+        notes: `${(distKm * 0.621371).toFixed(2)} mi · Recorded via GPS`,
+        geometry: [recordedPoints],
+        lat: recordedPoints[0][0],
+        lon: recordedPoints[0][1],
+        distance_km: distKm,
+        custom: true,
+      };
+
+      wishlist.unshift(newTrack);
+      saveWishlist(wishlist);
+      populateTrailPicker();
+      populateCreateBasePicker();
+      renderTrackMapTrails();
+      showToast("Recorded track saved to Wishlist!");
+    } else {
+      showToast("Track too short to save.");
+      if (activeRecordingPolyline) trackMap.removeLayer(activeRecordingPolyline);
+    }
   }
 }
 
@@ -375,29 +451,155 @@ function renderTrackMapTrails() {
   });
 }
 
-function populateTrailPicker() {
-  const picker = document.getElementById("trailPicker");
-  if (!picker) return;
+/* --------------------------------------------------------------------------
+   EXPLORE TAB & API SEARCH (OVERPASS & NPS)
+   -------------------------------------------------------------------------- */
 
-  picker.innerHTML = `<option value="">Select a saved trail to display...</option>`;
-  wishlist.forEach((t) => {
-    const opt = document.createElement("option");
-    opt.value = t.id;
-    opt.textContent = `${t.name} (${t.location || "Custom"})`;
-    picker.appendChild(opt);
-  });
+function initExploreMap() {
+  const mapElem = document.getElementById("exploreMap");
+  if (!mapElem) return;
+
+  exploreMap = L.map("exploreMap").setView([37.7749, -122.4194], 10);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "© OpenStreetMap contributors",
+  }).addTo(exploreMap);
+
+  exploreLayersGroup = L.layerGroup().addTo(exploreMap);
 }
 
-function populateCreateBasePicker() {
-  const picker = document.getElementById("createBaseTrailSelect");
-  if (!picker) return;
+async function searchExploreTrails() {
+  const query = document.getElementById("exploreSearchInput")?.value.trim();
+  const resultsContainer = document.getElementById("exploreResultsContainer");
+  if (!query) {
+    showToast("Please enter a location or trail name.");
+    return;
+  }
 
-  picker.innerHTML = `<option value="">Start from scratch OR pick saved base trail...</option>`;
-  wishlist.forEach((t) => {
-    const opt = document.createElement("option");
-    opt.value = t.id;
-    opt.textContent = t.name;
-    picker.appendChild(opt);
+  if (resultsContainer) {
+    resultsContainer.innerHTML = `<p class="loading-msg">Searching OSM & National Parks...</p>`;
+  }
+
+  try {
+    // Nomimatin Geocoding
+    const geoRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
+        query
+      )}`
+    );
+    const geoData = await geoRes.json();
+
+    if (!geoData || geoData.length === 0) {
+      if (resultsContainer)
+        resultsContainer.innerHTML = `<p class="empty-msg">No results found for "${query}".</p>`;
+      return;
+    }
+
+    const first = geoData[0];
+    const lat = parseFloat(first.lat);
+    const lon = parseFloat(first.lon);
+
+    if (exploreMap) exploreMap.setView([lat, lon], 12);
+
+    // Overpass API Query for trails around region
+    const overpassQuery = `
+      [out:json][timeout:25];
+      (
+        relation["route"="hiking"](around:15000,${lat},${lon});
+        way["highway"="path"](around:10000,${lat},${lon});
+      );
+      out geom 20;
+    `;
+
+    const opRes = await fetch("https://overpass-api.de/api/interpreter", {
+      method: "POST",
+      body: overpassQuery,
+    });
+    const opData = await opRes.json();
+
+    displayExploreResults(opData.elements || [], resultsContainer);
+  } catch (err) {
+    console.error("Explore search failed:", err);
+    if (resultsContainer)
+      resultsContainer.innerHTML = `<p class="empty-msg">Error searching for trails. Try again later.</p>`;
+  }
+}
+
+function displayExploreResults(elements, container) {
+  if (!container) return;
+  if (exploreLayersGroup) exploreLayersGroup.clearLayers();
+
+  const validTrails = elements.filter(
+    (el) => (el.type === "way" && el.geometry) || (el.type === "relation" && el.members)
+  );
+
+  if (validTrails.length === 0) {
+    container.innerHTML = `<p class="empty-msg">No detailed trail lines found nearby.</p>`;
+    return;
+  }
+
+  container.innerHTML = "";
+
+  validTrails.slice(0, 15).forEach((item, idx) => {
+    let segs = [];
+    if (item.type === "way" && item.geometry) {
+      segs = [item.geometry.map((pt) => [pt.lat, pt.lon])];
+    } else if (item.type === "relation" && item.members) {
+      item.members.forEach((m) => {
+        if (m.geometry) {
+          segs.push(m.geometry.map((pt) => [pt.lat, pt.lon]));
+        }
+      });
+    }
+
+    if (segs.length === 0) return;
+
+    const trailName =
+      (item.tags && (item.tags.name || item.tags.ref)) || `Trail Route #${idx + 1}`;
+    const firstPt = segs[0][0];
+
+    // Draw on map
+    segs.forEach((seg) => {
+      L.polyline(seg, { color: "#3b82f6", weight: 3, opacity: 0.8 }).addTo(
+        exploreLayersGroup
+      );
+    });
+
+    const card = document.createElement("div");
+    card.className = "trail-card";
+    card.innerHTML = `
+      <div class="trail-card-header">
+        <h3>${trailName}</h3>
+      </div>
+      <p class="trail-notes">Type: ${item.type} · ${segs.flat().length} nodes</p>
+      <div class="trail-card-actions">
+        <button class="btn btn-sm btn-primary" id="addExp_${idx}">Add to Saved</button>
+      </div>
+    `;
+
+    container.appendChild(card);
+
+    document.getElementById(`addExp_${idx}`)?.addEventListener("click", () => {
+      const newTrail = {
+        id: uid(),
+        name: trailName,
+        location: "Explored OSM Route",
+        notes: `Imported route`,
+        geometry: segs,
+        lat: firstPt[0],
+        lon: firstPt[1],
+        distance_km: editorDistanceKm({ segments: segs }),
+        custom: false,
+      };
+
+      wishlist.unshift(newTrail);
+      saveWishlist(wishlist);
+      populateTrailPicker();
+      populateCreateBasePicker();
+      renderTrackMapTrails();
+      showToast(`Added "${trailName}" to saved trails!`);
+    });
   });
 }
 
@@ -466,7 +668,7 @@ function saveEditedTrail(editorInstance, targetTrail) {
 }
 
 /* --------------------------------------------------------------------------
-   SAVED & TRACKED LIST RENDERING
+   SAVED LIST RENDERING & ACTIONS
    -------------------------------------------------------------------------- */
 
 function renderSavedList() {
@@ -509,6 +711,32 @@ function deleteWishlistItem(id) {
   populateCreateBasePicker();
   renderTrackMapTrails();
   showToast("Trail removed from saved list");
+}
+
+function populateTrailPicker() {
+  const picker = document.getElementById("trailPicker");
+  if (!picker) return;
+
+  picker.innerHTML = `<option value="">Select a saved trail to display...</option>`;
+  wishlist.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = `${t.name} (${t.location || "Custom"})`;
+    picker.appendChild(opt);
+  });
+}
+
+function populateCreateBasePicker() {
+  const picker = document.getElementById("createBaseTrailSelect");
+  if (!picker) return;
+
+  picker.innerHTML = `<option value="">Start from scratch OR pick saved base trail...</option>`;
+  wishlist.forEach((t) => {
+    const opt = document.createElement("option");
+    opt.value = t.id;
+    opt.textContent = t.name;
+    picker.appendChild(opt);
+  });
 }
 
 /* --------------------------------------------------------------------------
@@ -607,6 +835,14 @@ function bindGlobalEvents() {
   });
 
   document
+    .getElementById("recordTrackBtn")
+    ?.addEventListener("click", toggleRecording);
+
+  document
+    .getElementById("exploreSearchBtn")
+    ?.addEventListener("click", searchExploreTrails);
+
+  document
     .getElementById("createConfirmBtn")
     ?.addEventListener("click", () => {
       if (
@@ -670,6 +906,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindGlobalEvents();
 
   initTrackMap();
+  initExploreMap();
   initCreateEditor();
 
   populateTrailPicker();
