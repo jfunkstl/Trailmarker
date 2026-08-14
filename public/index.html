@@ -267,5 +267,25 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script src="app.js"></script>
+
+  <!-- Final, independent check: did Leaflet and app.js actually load and run?
+       This lives entirely here in index.html, not inside app.js, so it still
+       works and reports the truth even if app.js itself failed to load as a
+       file (a case none of app.js's own internal error handling can ever
+       catch, since that code never gets a chance to run in that scenario). -->
+  <script>
+    window.addEventListener("load", function () {
+      var problems = [];
+      if (typeof L === "undefined") problems.push("Leaflet did not load (script blocked or CDN unreachable)");
+      if (typeof switchTab === "undefined") problems.push("app.js did not load or failed before defining switchTab()");
+      if (typeof ensureDiscoverMap === "undefined") problems.push("app.js loaded partially but stopped before defining ensureDiscoverMap()");
+      if (problems.length > 0) {
+        var banner = document.createElement("div");
+        banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;background:#c0392b;color:#fff;padding:12px;text-align:center;font-family:sans-serif;font-size:13px;font-weight:bold;";
+        banner.textContent = "⚠️ " + problems.join(" | ");
+        document.body.appendChild(banner);
+      }
+    });
+  </script>
 </body>
 </html>
