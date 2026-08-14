@@ -474,16 +474,128 @@ function openSaveTrackModal() {
 trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTracking()));
 
 // ================= SHARED TRAIL-EDITING ENGINE =================
+const SNAP_RADIUS_PX = 15;
+
+const startIcon = L.divIcon({
+  html: `<div style="font-size: 20px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">🟢</div>`,
+  className: "waypoint-marker-start",
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+});
+
+const endIcon = L.divIcon({
+  html: `<div style="font-size: 20px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">🔵</div>`,
+  className: "waypoint-marker-end",
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+});
+
 function makeEditor(map) {
-  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map), freshSegment: true };
+  return {
+    map,
+    segments: [],
+    mode: "pencil",
+    polylineLayer: null,
+    markerGroup: L.layerGroup().addTo(map),
+    waypointGroup: L.layerGroup().addTo(map),
+    snapIndicator: null,
+    freshSegment: true,
+    startCutIndex: 0,
+    endCutIndex: null,
+    onTrailChange: null,
+  };
+}
+
+function editorFindSnapCandidate(editor, latlng) {
+  if (!editor.map || editor.segments.length === 0) return null;
+  const clickPt = editor.map.latLngToContainerPoint(latlng);
+
+  let bestSnap = null;
+  let minDistance = SNAP_RADIUS_PX;
+
+  editor.segments.forEach((seg, segIdx) => {
+    if (!seg || seg.length === 0) return;
+
+    const endpoints = [
+      { point: seg[0], ptIndex: 0, isStart: true },
+      { point: seg[seg.length - 1], ptIndex: seg.length - 1, isStart: false },
+    ];
+
+    endpoints.forEach(({ point, ptIndex }) => {
+      const screenPt = editor.map.latLngToContainerPoint(point);
+      const dist = Math.hypot(screenPt.x - clickPt.x, screenPt.y - clickPt.y);
+
+      if (dist <= minDistance) {
+        minDistance = dist;
+        bestSnap = {
+          latlng: point,
+          segIndex: segIdx,
+          ptIndex: ptIndex,
+        };
+      }
+    });
+  });
+
+  return bestSnap;
+}
+
+function mergeTopology(segments) {
+  if (!segments || segments.length <= 1) return segments;
+
+  let pool = segments.map((s) => [...s]);
+  let merged = true;
+
+  while (merged && pool.length > 1) {
+    merged = false;
+
+    for (let i = 0; i < pool.length; i++) {
+      for (let j = i + 1; j < pool.length; j++) {
+        const segA = pool[i];
+        const segB = pool[j];
+
+        const aStart = segA[0];
+        const aEnd = segA[segA.length - 1];
+        const bStart = segB[0];
+        const bEnd = segB[segB.length - 1];
+
+        if (aEnd[0] === bStart[0] && aEnd[1] === bStart[1]) {
+          pool[i] = segA.concat(segB.slice(1));
+          pool.splice(j, 1);
+          merged = true;
+          break;
+        } else if (aEnd[0] === bEnd[0] && aEnd[1] === bEnd[1]) {
+          pool[i] = segA.concat(segB.slice(0, -1).reverse());
+          pool.splice(j, 1);
+          merged = true;
+          break;
+        } else if (aStart[0] === bEnd[0] && aStart[1] === bEnd[1]) {
+          pool[i] = segB.concat(segA.slice(1));
+          pool.splice(j, 1);
+          merged = true;
+          break;
+        } else if (aStart[0] === bStart[0] && aStart[1] === bStart[1]) {
+          pool[i] = segB.reverse().concat(segA.slice(1));
+          pool.splice(j, 1);
+          merged = true;
+          break;
+        }
+      }
+      if (merged) break;
+    }
+  }
+
+  return pool;
 }
 
 function editorRedraw(editor) {
+  editor.segments = mergeTopology(editor.segments);
+
   if (!editor.polylineLayer) {
     editor.polylineLayer = L.polyline(editor.segments, { color: "#1B4332", weight: 5 }).addTo(editor.map);
   } else {
     editor.polylineLayer.setLatLngs(editor.segments);
   }
+
   editor.markerGroup.clearLayers();
   editor.segments.forEach((seg) => {
     seg.forEach((p, i) => {
@@ -497,16 +609,85 @@ function editorRedraw(editor) {
       }).addTo(editor.markerGroup);
     });
   });
+
+  editorUpdateWaypoints(editor);
+
+  if (editor.onTrailChange) {
+    editor.onTrailChange();
+  }
+}
+
+function editorUpdateWaypoints(editor) {
+  editor.waypointGroup.clearLayers();
+
+  const flatPoints = getActiveTrimmedPolyline(editor);
+  if (flatPoints.length < 2) return;
+
+  const startPt = flatPoints[0];
+  const endPt = flatPoints[flatPoints.length - 1];
+
+  const startMarker = L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup);
+  const endMarker = L.marker(endPt, { icon: endIcon, draggable: true }).addTo(editor.waypointGroup);
+
+  startMarker.on("dragend", (e) => {
+    const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
+    const allFlat = editor.segments.flat();
+
+    if (snap) {
+      const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
+      if (snapIdx !== -1) editor.startCutIndex = snapIdx;
+    }
+
+    editorRedraw(editor);
+  });
+
+  endMarker.on("dragend", (e) => {
+    const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
+    const allFlat = editor.segments.flat();
+
+    if (snap) {
+      const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
+      if (snapIdx !== -1) editor.endCutIndex = snapIdx;
+    }
+
+    editorRedraw(editor);
+  });
+}
+
+function getActiveTrimmedPolyline(editor) {
+  const chained = chainSegmentsFromStart(editor.segments);
+  const flat = chained.flat();
+
+  if (flat.length === 0) return [];
+
+  let start = editor.startCutIndex || 0;
+  let end = editor.endCutIndex !== null && editor.endCutIndex !== undefined ? editor.endCutIndex : flat.length - 1;
+
+  if (start > end) {
+    const temp = start;
+    start = end;
+    end = temp;
+  }
+
+  return flat.slice(start, end + 1);
 }
 
 function editorClick(editor, latlng) {
-  const point = [latlng.lat, latlng.lng];
+  let targetPoint = [latlng.lat, latlng.lng];
+
   if (editor.mode === "pencil") {
+    const snap = editorFindSnapCandidate(editor, latlng);
+    if (snap) {
+      targetPoint = [snap.latlng[0], snap.latlng[1]];
+    }
+
     if (editor.segments.length === 0 || editor.freshSegment) {
       editor.segments.push([]);
       editor.freshSegment = false;
     }
-    editor.segments[editor.segments.length - 1].push(point);
+
+    editor.segments[editor.segments.length - 1].push(targetPoint);
+    editor.endCutIndex = null;
     editorRedraw(editor);
   } else if (editor.mode === "eraser") {
     editorEraseNear(editor, latlng);
@@ -534,6 +715,8 @@ function editorEraseNear(editor, latlng) {
     if (current.length >= 2) newSegments.push(current);
   });
   editor.segments = newSegments;
+  editor.startCutIndex = 0;
+  editor.endCutIndex = null;
   editorRedraw(editor);
 }
 
@@ -542,12 +725,16 @@ function editorUndo(editor) {
   const last = editor.segments[editor.segments.length - 1];
   last.pop();
   if (last.length === 0) editor.segments.pop();
+  editor.startCutIndex = 0;
+  editor.endCutIndex = null;
   editorRedraw(editor);
 }
 
 function editorClear(editor) {
   editor.segments = [];
   editor.freshSegment = true;
+  editor.startCutIndex = 0;
+  editor.endCutIndex = null;
   editorRedraw(editor);
 }
 
@@ -555,6 +742,8 @@ function editorAddSegments(editor, geometry) {
   if (!geometry) return;
   geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
   editor.freshSegment = true;
+  editor.startCutIndex = 0;
+  editor.endCutIndex = null;
   editorRedraw(editor);
   const allPts = editor.segments.flat();
   if (allPts.length) {
@@ -563,10 +752,16 @@ function editorAddSegments(editor, geometry) {
 }
 
 function editorDistanceKm(editor) {
+  const activePolyline = getActiveTrimmedPolyline(editor);
   let km = 0;
-  editor.segments.forEach((seg) => {
-    for (let i = 1; i < seg.length; i++) km += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
-  });
+  for (let i = 1; i < activePolyline.length; i++) {
+    km += haversineKm(
+      activePolyline[i - 1][0],
+      activePolyline[i - 1][1],
+      activePolyline[i][0],
+      activePolyline[i][1]
+    );
+  }
   return km;
 }
 
@@ -618,6 +813,30 @@ function ensureCreateMap() {
   createMap = L.map("createMap").setView([39.5, -98.35], 4);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
   createEditor = makeEditor(createMap);
+  createEditor.onTrailChange = () => updateCreateStats();
+  
+  createMap.on("mousemove", (e) => {
+    if (createEditor.mode !== "pencil") return;
+    const snap = editorFindSnapCandidate(createEditor, e.latlng);
+
+    if (snap) {
+      if (!createEditor.snapIndicator) {
+        createEditor.snapIndicator = L.circleMarker(snap.latlng, {
+          radius: 8,
+          color: "#2563EB",
+          fillColor: "#60A5FA",
+          fillOpacity: 0.8,
+          weight: 2,
+        }).addTo(createMap);
+      } else {
+        createEditor.snapIndicator.setLatLng(snap.latlng);
+      }
+    } else if (createEditor.snapIndicator) {
+      createMap.removeLayer(createEditor.snapIndicator);
+      createEditor.snapIndicator = null;
+    }
+  });
+
   createMap.on("click", (e) => {
     editorClick(createEditor, e.latlng);
     updateCreateStats();
@@ -627,8 +846,8 @@ function ensureCreateMap() {
 }
 
 function updateCreateStats() {
-  const pointCount = createEditor.segments.reduce((s, seg) => s + seg.length, 0);
-  document.getElementById("createPointCount").textContent = String(pointCount);
+  const activePolyline = getActiveTrimmedPolyline(createEditor);
+  document.getElementById("createPointCount").textContent = String(activePolyline.length);
   document.getElementById("createDistance").textContent = fmtDist(editorDistanceKm(createEditor) * 1000);
 }
 
@@ -687,11 +906,14 @@ document.getElementById("createClearBtn").addEventListener("click", () => {
 });
 
 document.getElementById("createSaveBtn").addEventListener("click", () => {
-  if (!validateGeometry(createEditor.segments)) {
+  const activePolyline = getActiveTrimmedPolyline(createEditor);
+  const activeSegments = [activePolyline];
+
+  if (!validateGeometry(activeSegments)) {
     return;
   }
 
-  const chainedSegments = chainSegmentsFromStart(createEditor.segments);
+  const chainedSegments = chainSegmentsFromStart(activeSegments);
   const km = editorDistanceKm(createEditor);
   openModal("Save your route", `
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
@@ -1104,6 +1326,28 @@ function enterMapEditMode(trail) {
     if (allPts.length) map.fitBounds(allPts, { padding: [16, 16] });
     else map.setView([trail.lat, trail.lon], 12);
 
+    map.on("mousemove", (e) => {
+      if (modalEditor.mode !== "pencil") return;
+      const snap = editorFindSnapCandidate(modalEditor, e.latlng);
+
+      if (snap) {
+        if (!modalEditor.snapIndicator) {
+          modalEditor.snapIndicator = L.circleMarker(snap.latlng, {
+            radius: 8,
+            color: "#2563EB",
+            fillColor: "#60A5FA",
+            fillOpacity: 0.8,
+            weight: 2,
+          }).addTo(map);
+        } else {
+          modalEditor.snapIndicator.setLatLng(snap.latlng);
+        }
+      } else if (modalEditor.snapIndicator) {
+        map.removeLayer(modalEditor.snapIndicator);
+        modalEditor.snapIndicator = null;
+      }
+    });
+
     map.on("click", (e) => editorClick(modalEditor, e.latlng));
     editorSetMode(modalEditor, "pencil", editPencilBtn, editEraserBtn);
   }, 250);
@@ -1115,11 +1359,14 @@ function enterMapEditMode(trail) {
   document.getElementById("editUndoBtn").onclick = () => editorUndo(modalEditor);
   document.getElementById("editClearBtn").onclick = () => editorClear(modalEditor);
   document.getElementById("editSaveBtn").onclick = () => {
-    if (!validateGeometry(modalEditor.segments)) {
+    const activePolyline = getActiveTrimmedPolyline(modalEditor);
+    const activeSegments = [activePolyline];
+
+    if (!validateGeometry(activeSegments)) {
       return;
     }
 
-    const chainedSegments = chainSegmentsFromStart(modalEditor.segments);
+    const chainedSegments = chainSegmentsFromStart(activeSegments);
     const km = editorDistanceKm(modalEditor);
     const overlay = document.createElement("div");
     overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
