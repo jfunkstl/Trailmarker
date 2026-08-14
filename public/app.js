@@ -59,15 +59,11 @@ function editorDistanceKm(editor) {
   );
 }
 
-/**
- * Re-orders and flips multi-line segments to construct a single continuous route.
- */
 function chainSegmentsFromStart(segments, startLatLng) {
   if (!segments || segments.length === 0) return [];
   let remaining = segments.map((s) => [...s]);
   let chained = [];
 
-  // Find nearest segment endpoint to start position
   let bestIdx = 0;
   let bestReverse = false;
   let minDist = Infinity;
@@ -102,7 +98,6 @@ function chainSegmentsFromStart(segments, startLatLng) {
   if (bestReverse) currentSeg.reverse();
   chained.push(currentSeg);
 
-  // Chain remaining segments
   while (remaining.length > 0) {
     const lastPoint = chained[chained.length - 1][chained[chained.length - 1].length - 1];
     let nextIdx = 0;
@@ -133,9 +128,6 @@ function chainSegmentsFromStart(segments, startLatLng) {
   return chained;
 }
 
-/**
- * Validates route continuity and checks for massive gaps.
- */
 function validateGeometry(segments) {
   if (!segments || segments.length === 0) {
     return { valid: false, reason: "No segment data available" };
@@ -206,7 +198,7 @@ function saveTracked(data) {
 function initEditorState(mapInstance) {
   return {
     map: mapInstance,
-    segments: [], // Array of coordinate arrays [[lat, lon], ...]
+    segments: [],
     polylineGroup: L.layerGroup().addTo(mapInstance),
     startMarker: null,
     endMarker: null,
@@ -296,12 +288,13 @@ function editorUpdateEndpoints(editor) {
 
 function switchTab(tabName) {
   activeTab = tabName;
-  document
-    .querySelectorAll(".tab-btn")
-    .forEach((btn) => btn.classList.remove("active"));
-  document
-    .querySelectorAll(".tab-content")
-    .forEach((content) => content.classList.remove("active"));
+
+  document.querySelectorAll(".tab-btn, [id^='tabBtn-']").forEach((btn) => {
+    btn.classList.remove("active");
+  });
+  document.querySelectorAll(".tab-content, [id^='tabContent-']").forEach((content) => {
+    content.classList.remove("active");
+  });
 
   const targetBtn = document.getElementById(`tabBtn-${tabName}`);
   const targetContent = document.getElementById(`tabContent-${tabName}`);
@@ -311,6 +304,8 @@ function switchTab(tabName) {
 
   if (tabName === "track" && trackMap) {
     setTimeout(() => trackMap.invalidateSize(), 200);
+  } else if (tabName === "create" && createEditor && createEditor.map) {
+    setTimeout(() => createEditor.map.invalidateSize(), 200);
   }
 }
 
@@ -336,25 +331,31 @@ function initTrackMap() {
 
   trailLayersGroup = L.layerGroup().addTo(trackMap);
 
+  // Non-blocking location request
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         currentPos = [pos.coords.latitude, pos.coords.longitude];
-        trackMap.setView(currentPos, 13);
-
-        userMarker = L.circleMarker(currentPos, {
-          radius: 8,
-          fillColor: "#2563eb",
-          color: "#ffffff",
-          weight: 2,
-          opacity: 1,
-          fillOpacity: 0.9,
-        })
-          .addTo(trackMap)
-          .bindPopup("You are here");
+        if (trackMap) {
+          trackMap.setView(currentPos, 13);
+          if (userMarker) {
+            userMarker.setLatLng(currentPos);
+          } else {
+            userMarker = L.circleMarker(currentPos, {
+              radius: 8,
+              fillColor: "#2563eb",
+              color: "#ffffff",
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.9,
+            }).addTo(trackMap).bindPopup("You are here");
+          }
+        }
       },
-      (err) => console.warn("Geolocation warning/error:", err.message),
-      { enableHighAccuracy: true }
+      (err) => {
+        console.warn("Geolocation prompt or access issue:", err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   }
 }
@@ -564,7 +565,7 @@ function openTrailMapModal(trailId) {
 
     document
       .getElementById("saveModalTrailBtn")
-      .addEventListener("click", () => {
+      ?.addEventListener("click", () => {
         saveEditedTrail(modalEditor, trail);
       });
   }, 100);
@@ -574,35 +575,37 @@ function openTrailMapModal(trailId) {
    EVENT BINDINGS & INIT
    -------------------------------------------------------------------------- */
 
-document.addEventListener("DOMContentLoaded", () => {
-  loadSavedData();
+function bindGlobalEvents() {
+  document.body.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-tab]");
+    if (btn) {
+      const tabName = btn.getAttribute("data-tab");
+      if (tabName) switchTab(tabName);
+      return;
+    }
 
-  initTrackMap();
-  initCreateEditor();
+    if (e.target.id === "modalOverlay") {
+      closeModal();
+    }
+  });
 
-  populateTrailPicker();
-  populateCreateBasePicker();
-  renderSavedList();
-  renderTrackMapTrails();
+  const tabButtons = {
+    "tabBtn-track": "track",
+    "tabBtn-explore": "explore",
+    "tabBtn-create": "create",
+    "tabBtn-saved": "saved",
+  };
 
-  // Tab switching listeners
-  document
-    .getElementById("tabBtn-track")
-    ?.addEventListener("click", () => switchTab("track"));
-  document
-    .getElementById("tabBtn-explore")
-    ?.addEventListener("click", () => switchTab("explore"));
-  document
-    .getElementById("tabBtn-create")
-    ?.addEventListener("click", () => switchTab("create"));
-  document
-    .getElementById("tabBtn-saved")
-    ?.addEventListener("click", () => {
-      renderSavedList();
-      switchTab("saved");
-    });
+  Object.entries(tabButtons).forEach(([btnId, tabName]) => {
+    const el = document.getElementById(btnId);
+    if (el) {
+      el.addEventListener("click", () => {
+        if (tabName === "saved") renderSavedList();
+        switchTab(tabName);
+      });
+    }
+  });
 
-  // Save Custom Route Button in Create Tab
   document
     .getElementById("createConfirmBtn")
     ?.addEventListener("click", () => {
@@ -616,8 +619,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       const name =
-        document.getElementById("createName").value.trim() || "Untitled route";
-      const state = document.getElementById("createState").value;
+        document.getElementById("createName")?.value.trim() || "Untitled route";
+      const state = document.getElementById("createState")?.value || "";
 
       const startLatLng = createEditor.startMarker
         ? createEditor.startMarker.getLatLng()
@@ -659,4 +662,18 @@ document.addEventListener("DOMContentLoaded", () => {
       renderTrackMapTrails();
       showToast("Route saved — find it in Track or your Saved list");
     });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  loadSavedData();
+
+  bindGlobalEvents();
+
+  initTrackMap();
+  initCreateEditor();
+
+  populateTrailPicker();
+  populateCreateBasePicker();
+  renderSavedList();
+  renderTrackMapTrails();
 });
