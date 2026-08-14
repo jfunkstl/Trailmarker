@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Trail App - public/app.js (Full Restored Production Code)
+   Trail App - public/app.js (Complete Restored Code with Directed Path Fix)
    ========================================================================== */
 
 let wishlist = [];
@@ -68,6 +68,10 @@ function editorDistanceKm(editor) {
   );
 }
 
+/**
+ * Re-orders and flips multi-line segments to construct a single continuous route
+ * starting from the designated start point.
+ */
 function chainSegmentsFromStart(segments, startLatLng) {
   if (!segments || segments.length === 0) return [];
   let remaining = segments.map((s) => [...s]);
@@ -137,6 +141,9 @@ function chainSegmentsFromStart(segments, startLatLng) {
   return chained;
 }
 
+/**
+ * Validates route continuity and checks for large disconnected gaps.
+ */
 function validateGeometry(segments) {
   if (!segments || segments.length === 0) {
     return { valid: false, reason: "No segment data available" };
@@ -201,7 +208,7 @@ function saveTracked(data) {
 }
 
 /* --------------------------------------------------------------------------
-   EDITOR HELPERS & ENDPOINTS
+   EDITOR HELPERS & DRAGGABLE ENDPOINTS
    -------------------------------------------------------------------------- */
 
 function initEditorState(mapInstance) {
@@ -326,7 +333,7 @@ function closeModal() {
 }
 
 /* --------------------------------------------------------------------------
-   TRACK TAB & LIVE RECORDING
+   TRACK TAB & LIVE GPS RECORDING
    -------------------------------------------------------------------------- */
 
 function initTrackMap() {
@@ -482,7 +489,6 @@ async function searchExploreTrails() {
   }
 
   try {
-    // Nomimatin Geocoding
     const geoRes = await fetch(
       `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
         query
@@ -502,7 +508,6 @@ async function searchExploreTrails() {
 
     if (exploreMap) exploreMap.setView([lat, lon], 12);
 
-    // Overpass API Query for trails around region
     const overpassQuery = `
       [out:json][timeout:25];
       (
@@ -559,7 +564,6 @@ function displayExploreResults(elements, container) {
       (item.tags && (item.tags.name || item.tags.ref)) || `Trail Route #${idx + 1}`;
     const firstPt = segs[0][0];
 
-    // Draw on map
     segs.forEach((seg) => {
       L.polyline(seg, { color: "#3b82f6", weight: 3, opacity: 0.8 }).addTo(
         exploreLayersGroup
