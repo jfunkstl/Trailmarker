@@ -509,6 +509,307 @@ function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
 // destroyed (detached from the DOM) if we replaced its HTML wholesale.
 function openAddSavedTrailPicker(onPick, container = modalPanel) {
   const savedWithGeometry = wishlist.filter((w) => w.geometry);
+// ================= SHARED TRAIL-EDITING ENGINE =================
+// Both the Create tab and the "edit this trail's map" feature share this engine.
+// Supports: pencil draw, eraser, undo, clear, add-saved-trail, plus
+// draggable green Start / blue End markers that snap to segment endpoints
+// and re-order the geometry into a true walkable path on save.
+
+function makeEditor(map) {
+  return {
+    map,
+    segments: [],
+    mode: "pencil",
+    polylineLayer: null,
+    markerGroup: L.layerGroup().addTo(map),
+    endpointGroup: L.layerGroup().addTo(map),
+    startMarker: null,
+    endMarker: null,
+    freshSegment: true,
+  };
+}
+
+// Haversine distance between two [lat, lon] points (km)
+function pointDistKm(a, b) {
+  return haversineKm(a[0], a[1], b[0], b[1]);
+}
+
+// Collect every segment endpoint (first + last point of every segment)
+function collectEndpoints(segments) {
+  const pts = [];
+  segments.forEach((seg) => {
+    if (seg.length >= 2) {
+      pts.push(seg[0]);
+      pts.push(seg[seg.length - 1]);
+    }
+  });
+  return pts;
+}
+
+// Find the nearest endpoint to a given latlng (returns the [lat,lon] or null)
+function nearestEndpoint(segments, latlng, maxMeters = 40) {
+  const endpoints = collectEndpoints(segments);
+  if (endpoints.length === 0) return null;
+  let best = null;
+  let bestDist = Infinity;
+  endpoints.forEach((p) => {
+    const d = haversineKm(latlng.lat, latlng.lng, p[0], p[1]) * 1000; // meters
+    if (d < bestDist && d <= maxMeters) {
+      bestDist = d;
+      best = p;
+    }
+  });
+  return best;
+}
+
+// Snap a Leaflet LatLng to the nearest endpoint if close enough
+function snapLatLng(editor, latlng) {
+  const snapped = nearestEndpoint(editor.segments, latlng, 45);
+  if (snapped) return L.latLng(snapped[0], snapped[1]);
+  return latlng;
+}
+
+function editorRedraw(editor) {
+  if (!editor.polylineLayer) {
+    editor.polylineLayer = L.polyline(editor.segments, { color: "#1B4332", weight: 5 }).addTo(editor.map);
+  } else {
+    editor.polylineLayer.setLatLngs(editor.segments);
+  }
+
+  // Small visible dots at every vertex
+  editor.markerGroup.clearLayers();
+  editor.segments.forEach((seg) => {
+    seg.forEach((p, i) => {
+      const isEndpoint = i === 0 || i === seg.length - 1;
+      L.circleMarker(p, {
+        radius: isEndpoint ? 6 : 4,
+        color: "#ffffff",
+        weight: 2,
+        fillColor: "#1B4332",
+        fillOpacity: 1,
+      }).addTo(editor.markerGroup);
+    });
+  });
+
+  editorUpdateEndpoints(editor);
+}
+
+function editorUpdateEndpoints(editor) {
+  // Remove old markers
+  if (editor.startMarker) {
+    editor.map.removeLayer(editor.startMarker);
+    editor.startMarker = null;
+  }
+  if (editor.endMarker) {
+    editor.map.removeLayer(editor.endMarker);
+    editor.endMarker = null;
+  }
+  editor.endpointGroup.clearLayers();
+
+  const allPts = editor.segments.flat();
+  if (allPts.length < 2) return;
+
+  // Default positions: first point of first segment / last point of last segment
+  // (will be re-ordered properly on save via chainSegmentsWithEndpoints)
+  const startPt = editor.segments[0][0];
+  const lastSeg = editor.segments[editor.segments.length - 1];
+  const endPt = lastSeg[lastSeg.length - 1];
+
+  const startIcon = L.divIcon({
+    className: "",
+    html: `<div style="background:#16a34a;color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);">S</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+  const endIcon = L.divIcon({
+    className: "",
+    html: `<div style="background:#2563eb;color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);">E</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+
+  editor.startMarker = L.marker(startPt, { icon: startIcon, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
+  editor.endMarker = L.marker(endPt, { icon: endIcon, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
+
+  // Snap while dragging + on drag end
+  const snapOnDrag = (marker) => {
+    marker.on("drag", (e) => {
+      const snapped = nearestEndpoint(editor.segments, e.target.getLatLng(), 50);
+      if (snapped) e.target.setLatLng(snapped);
+    });
+    marker.on("dragend", (e) => {
+      const snapped = nearestEndpoint(editor.segments, e.target.getLatLng(), 60);
+      if (snapped) e.target.setLatLng(snapped);
+    });
+  };
+  snapOnDrag(editor.startMarker);
+  snapOnDrag(editor.endMarker);
+}
+
+function editorClick(editor, latlng) {
+  // Snap the click to nearest existing endpoint when possible
+  const snapped = snapLatLng(editor, latlng);
+  const point = [snapped.lat, snapped.lng];
+
+  if (editor.mode === "pencil") {
+    if (editor.segments.length === 0 || editor.freshSegment) {
+      editor.segments.push([]);
+      editor.freshSegment = false;
+    }
+    editor.segments[editor.segments.length - 1].push(point);
+    editorRedraw(editor);
+  } else if (editor.mode === "eraser") {
+    editorEraseNear(editor, latlng);
+  }
+}
+
+function editorEraseNear(editor, latlng) {
+  const tapPoint = editor.map.latLngToContainerPoint(latlng);
+  const RADIUS_PX = 24;
+  const isNear = (p) => {
+    const pt = editor.map.latLngToContainerPoint(p);
+    return Math.hypot(pt.x - tapPoint.x, pt.y - tapPoint.y) <= RADIUS_PX;
+  };
+  const newSegments = [];
+  editor.segments.forEach((seg) => {
+    let current = [];
+    seg.forEach((p) => {
+      if (isNear(p)) {
+        if (current.length >= 2) newSegments.push(current);
+        current = [];
+      } else {
+        current.push(p);
+      }
+    });
+    if (current.length >= 2) newSegments.push(current);
+  });
+  editor.segments = newSegments;
+  editorRedraw(editor);
+}
+
+function editorUndo(editor) {
+  if (editor.segments.length === 0) return;
+  const last = editor.segments[editor.segments.length - 1];
+  last.pop();
+  if (last.length === 0) editor.segments.pop();
+  editorRedraw(editor);
+}
+
+function editorClear(editor) {
+  editor.segments = [];
+  editor.freshSegment = true;
+  if (editor.startMarker) { editor.map.removeLayer(editor.startMarker); editor.startMarker = null; }
+  if (editor.endMarker) { editor.map.removeLayer(editor.endMarker); editor.endMarker = null; }
+  editorRedraw(editor);
+}
+
+function editorAddSegments(editor, geometry) {
+  if (!geometry) return;
+  geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
+  editor.freshSegment = true;
+  editorRedraw(editor);
+  const allPts = editor.segments.flat();
+  if (allPts.length) {
+    setTimeout(() => { editor.map.invalidateSize(); editor.map.fitBounds(allPts, { padding: [20, 20] }); }, 30);
+  }
+}
+
+function editorDistanceKm(editor) {
+  let km = 0;
+  editor.segments.forEach((seg) => {
+    for (let i = 1; i < seg.length; i++) km += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
+  });
+  return km;
+}
+
+function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
+  editor.mode = mode;
+  if (mode === "pencil") editor.freshSegment = true;
+  pencilBtn.classList.toggle("bg-pine", mode === "pencil");
+  pencilBtn.classList.toggle("text-white", mode === "pencil");
+  eraserBtn.classList.toggle("bg-pine", mode === "eraser");
+  eraserBtn.classList.toggle("text-white", mode === "eraser");
+}
+
+// Re-order + re-orient segments so the path starts at the green S marker
+// and ends at the blue E marker. Uses nearest-neighbor chaining.
+function chainSegmentsWithEndpoints(segments, startLatLng, endLatLng) {
+  if (!segments || segments.length === 0) return [];
+  if (segments.length === 1) {
+    const seg = segments[0].slice();
+    // Orient the single segment so it begins nearer the start marker
+    const dStartToFirst = pointDistKm([startLatLng.lat, startLatLng.lng], seg[0]);
+    const dStartToLast = pointDistKm([startLatLng.lat, startLatLng.lng], seg[seg.length - 1]);
+    if (dStartToLast < dStartToFirst) seg.reverse();
+    return [seg];
+  }
+
+  const remaining = segments.map((s) => s.slice());
+  const result = [];
+
+  // Find the segment whose endpoint is closest to the Start marker
+  let bestIdx = 0;
+  let bestDist = Infinity;
+  let bestReverse = false;
+  remaining.forEach((seg, i) => {
+    const dFirst = pointDistKm([startLatLng.lat, startLatLng.lng], seg[0]);
+    const dLast = pointDistKm([startLatLng.lat, startLatLng.lng], seg[seg.length - 1]);
+    if (dFirst < bestDist) { bestDist = dFirst; bestIdx = i; bestReverse = false; }
+    if (dLast < bestDist) { bestDist = dLast; bestIdx = i; bestReverse = true; }
+  });
+
+  let current = remaining.splice(bestIdx, 1)[0];
+  if (bestReverse) current.reverse();
+  result.push(current);
+  let tip = current[current.length - 1];
+
+  // Greedily attach the nearest remaining segment (orienting as needed)
+  while (remaining.length > 0) {
+    let nearestIdx = 0;
+    let nearestDist = Infinity;
+    let reverse = false;
+    remaining.forEach((seg, i) => {
+      const dFirst = pointDistKm(tip, seg[0]);
+      const dLast = pointDistKm(tip, seg[seg.length - 1]);
+      if (dFirst < nearestDist) { nearestDist = dFirst; nearestIdx = i; reverse = false; }
+      if (dLast < nearestDist) { nearestDist = dLast; nearestIdx = i; reverse = true; }
+    });
+    let next = remaining.splice(nearestIdx, 1)[0];
+    if (reverse) next.reverse();
+    result.push(next);
+    tip = next[next.length - 1];
+  }
+
+  // Final orientation check against the End marker (if the last segment ends far from E, reverse the whole chain)
+  const finalTip = result[result.length - 1][result[result.length - 1].length - 1];
+  const finalStart = result[0][0];
+  const dEndToTip = pointDistKm([endLatLng.lat, endLatLng.lng], finalTip);
+  const dEndToStart = pointDistKm([endLatLng.lat, endLatLng.lng], finalStart);
+  if (dEndToStart < dEndToTip) {
+    // Whole path is backwards relative to E — reverse every segment and the order
+    result.reverse();
+    result.forEach((s) => s.reverse());
+  }
+
+  return result;
+}
+
+function validateGeometry(geometry) {
+  if (!Array.isArray(geometry) || geometry.length === 0) return "Route has no segments";
+  for (const seg of geometry) {
+    if (!Array.isArray(seg) || seg.length < 2) return "Every segment needs at least two points";
+    for (const p of seg) {
+      if (!Array.isArray(p) || p.length < 2 || typeof p[0] !== "number" || typeof p[1] !== "number") {
+        return "Invalid coordinate found";
+      }
+      if (p[0] < -90 || p[0] > 90 || p[1] < -180 || p[1] > 180) return "Coordinate out of range";
+    }
+  }
+  return null;
+}
+
+function openAddSavedTrailPicker(onPick, container = modalPanel) {
+  const savedWithGeometry = wishlist.filter((w) => w.geometry);
   if (savedWithGeometry.length === 0) {
     showToast("No saved trails with map data yet");
     return;
@@ -535,9 +836,7 @@ function openAddSavedTrailPicker(onPick, container = modalPanel) {
       overlay.remove();
     });
   });
-}
-
-// ================= CREATE =================
+    }
 let createMap = null;
 let createEditor = null;
 
