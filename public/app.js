@@ -1406,17 +1406,34 @@ function openElevationModal() {
 async function loadElevationChart(trail) {
   const note = document.getElementById("elevationNote");
   try {
-    // Flatten geometry into one path with cumulative distance, then sample
-    // ~20 evenly spaced points (elevation lookups are one-point-at-a-time).
+    // Build continuous distance but SKIP gaps between segments
+    // (those come from stitching trails or eraser gaps — not real mileage)
     const allPoints = [];
-    trail.geometry.forEach((seg) => seg.forEach((pt) => allPoints.push(pt)));
+    const cum = [];
+    let runningKm = 0;
+
+    (trail.geometry || []).forEach((seg) => {
+      if (!seg || seg.length < 2) return;
+      for (let i = 0; i < seg.length; i++) {
+        if (allPoints.length === 0) {
+          allPoints.push(seg[i]);
+          cum.push(0);
+        } else if (i === 0) {
+          allPoints.push(seg[i]);
+          cum.push(runningKm);
+        } else {
+          const prev = allPoints[allPoints.length - 1];
+          const d = haversineKm(prev[0], prev[1], seg[i][0], seg[i][1]);
+          runningKm += d;
+          allPoints.push(seg[i]);
+          cum.push(runningKm);
+        }
+      }
+    });
+
     if (allPoints.length < 2) throw new Error("not enough points");
 
-    const cum = [0];
-    for (let i = 1; i < allPoints.length; i++) {
-      cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
-    }
-    const totalKm = cum[cum.length - 1];
+    const totalKm = runningKm;
     const SAMPLES = 20;
     const sampled = [];
     for (let i = 0; i < SAMPLES; i++) {
@@ -1426,11 +1443,11 @@ async function loadElevationChart(trail) {
       sampled.push({ point: allPoints[idx], mi: cum[idx] * 0.621371 });
     }
 
-    const locString = sampled.map((s) => `${s.point[0]},${s.point[1]}`).join("|");
+    const locString = sampled.map((s) => `\( {s.point[0]}, \){s.point[1]}`).join("|");
     const resp = await fetch(`/api/elevation?locations=${encodeURIComponent(locString)}`);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "elevation API error");
-    const elevations = data.elevations; // feet, may contain nulls for points with no data
+    const elevations = data.elevations;
 
     const known = elevations.filter((e) => e !== null && e !== undefined);
     if (known.length < 2) throw new Error("not enough elevation data returned");
@@ -1442,10 +1459,24 @@ async function loadElevationChart(trail) {
       }
     }
 
-    lastElevationData = { sampled, elevations, trailName: trail.name, geometry: trail.geometry, lat: trail.lat, lon: trail.lon };
+    lastElevationData = {
+      sampled,
+      elevations,
+      trailName: trail.name,
+      geometry: trail.geometry,
+      lat: trail.lat,
+      lon: trail.lon,
+    };
     if (elevationChartInstance) elevationChartInstance.destroy();
-    buildElevationChart("elevationChart", "elevationReadout", sampled, elevations, (i) => { elevationChartInstance = i; }, 160,
-      (point) => updateScrubMarker(detailMiniMapInstance, detailScrubMarker, point));
+    buildElevationChart(
+      "elevationChart",
+      "elevationReadout",
+      sampled,
+      elevations,
+      (i) => { elevationChartInstance = i; },
+      160,
+      (point) => updateScrubMarker(detailMiniMapInstance, detailScrubMarker, point)
+    );
     const expandBtn = document.getElementById("elevationExpandBtn");
     expandBtn.classList.remove("hidden");
     expandBtn.onclick = openElevationModal;
