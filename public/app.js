@@ -80,7 +80,7 @@ const saveWishlist = (list) => localStorage.setItem(WISHLIST_KEY, JSON.stringify
 let hikes = loadHikes();
 let wishlist = loadWishlist();
 
-// ---------- helpers ----------
+// ---------- helpers & geometry utilities ----------
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 const fmtTime = (s) => {
@@ -118,6 +118,101 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   const la1 = (lat1 * Math.PI) / 180, la2 = (lat2 * Math.PI) / 180;
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+
+// -------------------------------------------------------------
+// 1. chainSegmentsFromStart(segments, startPoint)
+// Greedily orders and re-orients segments to maintain contiguous trail flow.
+// -------------------------------------------------------------
+function chainSegmentsFromStart(segments, startPoint = null) {
+  if (!segments || segments.length === 0) return [];
+  
+  // Clone working pool of segments
+  const pool = segments.map((seg) => seg.map((p) => [p[0], p[1]]));
+  const chained = [];
+
+  // Determine current endpoint anchor
+  let currentPt = startPoint ? [startPoint[0], startPoint[1]] : pool[0][0];
+
+  while (pool.length > 0) {
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    let shouldReverse = false;
+
+    for (let i = 0; i < pool.length; i++) {
+      const seg = pool[i];
+      if (!seg || seg.length === 0) continue;
+
+      const startPt = seg[0];
+      const endPt = seg[seg.length - 1];
+
+      const dStart = haversineKm(currentPt[0], currentPt[1], startPt[0], startPt[1]);
+      const dEnd = haversineKm(currentPt[0], currentPt[1], endPt[0], endPt[1]);
+
+      if (dStart < bestDist) {
+        bestDist = dStart;
+        bestIdx = i;
+        shouldReverse = false;
+      }
+      if (dEnd < bestDist) {
+        bestDist = dEnd;
+        bestIdx = i;
+        shouldReverse = true;
+      }
+    }
+
+    if (bestIdx === -1) break;
+
+    let chosenSeg = pool.splice(bestIdx, 1)[0];
+    if (shouldReverse) {
+      chosenSeg.reverse();
+    }
+
+    chained.push(chosenSeg);
+    currentPt = chosenSeg[chosenSeg.length - 1];
+  }
+
+  return chained;
+}
+
+// -------------------------------------------------------------
+// 2. validateGeometry(geometry)
+// Ensures state integrity, valid coordinate ranges, and point counts.
+// -------------------------------------------------------------
+function validateGeometry(geometry) {
+  if (!geometry || !Array.isArray(geometry) || geometry.length === 0) {
+    showToast("Invalid geometry: Trail must contain at least one segment.");
+    return false;
+  }
+
+  for (let i = 0; i < geometry.length; i++) {
+    const seg = geometry[i];
+    if (!Array.isArray(seg) || seg.length < 2) {
+      showToast(`Invalid segment #${i + 1}: Must contain at least 2 coordinate points.`);
+      return false;
+    }
+
+    for (let j = 0; j < seg.length; j++) {
+      const pt = seg[j];
+      if (!Array.isArray(pt) || pt.length < 2) {
+        showToast(`Invalid point in segment #${i + 1}: Coordinate pair required.`);
+        return false;
+      }
+
+      const [lat, lon] = pt;
+      if (typeof lat !== "number" || typeof lon !== "number" || isNaN(lat) || isNaN(lon)) {
+        showToast("Invalid coordinate value detected.");
+        return false;
+      }
+
+      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+        showToast("Coordinates out of valid geographical bounds.");
+        return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 function updateStatLine() {
@@ -217,8 +312,6 @@ const statTime = document.getElementById("statTime");
 const statCalories = document.getElementById("statCalories");
 const trailPicker = document.getElementById("trailPicker");
 
-// Rough general estimate, not personalized: about 62 kcal per km of hiking
-// (roughly the commonly-cited ~100 kcal/mile average for a moderate pace).
 const caloriesFromKm = (km) => Math.round(km * 62);
 
 let trackMap = null;
@@ -246,8 +339,7 @@ function selectTrailToFollow(id) {
   const offlineBtn = document.getElementById("trackOfflineBtn");
   offlineBtn.classList.toggle("hidden", !followedTrail);
   offlineBtn.onclick = followedTrail ? (e) => downloadTrailForOffline(followedTrail, e.target) : null;
-  // Deferred so this always runs after the tab's own layout/map-init settles,
-  // whether we got here by switching tabs or just changing the dropdown.
+
   setTimeout(() => {
     const map = ensureTrackMap();
     map.invalidateSize();
@@ -382,11 +474,6 @@ function openSaveTrackModal() {
 trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTracking()));
 
 // ================= SHARED TRAIL-EDITING ENGINE =================
-// Both the Create tab and the "edit this trail's map" feature (from a trail's
-// detail page) need the same core abilities: draw point-to-point, erase
-// nearby points (can leave a gap mid-trail), undo, clear, and merge in
-// another saved trail as an extra piece. One shared engine avoids having to
-// keep two copies of this logic in sync.
 function makeEditor(map) {
   return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map), freshSegment: true };
 }
@@ -397,8 +484,6 @@ function editorRedraw(editor) {
   } else {
     editor.polylineLayer.setLatLngs(editor.segments);
   }
-  // Small visible dot at every point, Google-Maps-measure-tool style — makes
-  // it clear exactly where each tap landed and where segment breaks are.
   editor.markerGroup.clearLayers();
   editor.segments.forEach((seg) => {
     seg.forEach((p, i) => {
@@ -428,10 +513,6 @@ function editorClick(editor, latlng) {
   }
 }
 
-// Erases points within ~24 screen pixels of the touch point — measured in
-// pixels (not meters) so it feels consistent at any zoom level, and can
-// split a segment in two (leaving a real visual gap) rather than just
-// straight-lining across the erased portion.
 function editorEraseNear(editor, latlng) {
   const tapPoint = editor.map.latLngToContainerPoint(latlng);
   const RADIUS_PX = 24;
@@ -470,11 +551,6 @@ function editorClear(editor) {
   editorRedraw(editor);
 }
 
-// Adds another saved trail's geometry as its own separate piece (not
-// connected by a straight line) — used both for Create's "Start from" and
-// the new "+" add-saved-trail button, and for combining multiple trails
-// into one custom route (e.g. stitching West Maroon + Maroon-Snowmass Trail
-// together into your own Four Pass Loop).
 function editorAddSegments(editor, geometry) {
   if (!geometry) return;
   geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
@@ -503,10 +579,6 @@ function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
   eraserBtn.classList.toggle("text-white", mode === "eraser");
 }
 
-// Shows a scrollable list of saved trails to pick from, for the "+" button.
-// Uses an overlay rather than replacing modalBody's content, since the
-// editor's live Leaflet map instance lives inside modalBody and would be
-// destroyed (detached from the DOM) if we replaced its HTML wholesale.
 function openAddSavedTrailPicker(onPick, container = modalPanel) {
   const savedWithGeometry = wishlist.filter((w) => w.geometry);
   if (savedWithGeometry.length === 0) {
@@ -615,16 +687,16 @@ document.getElementById("createClearBtn").addEventListener("click", () => {
 });
 
 document.getElementById("createSaveBtn").addEventListener("click", () => {
-  const pointCount = createEditor.segments.reduce((s, seg) => s + seg.length, 0);
-  if (pointCount < 2) {
-    showToast("Add at least two points first");
+  if (!validateGeometry(createEditor.segments)) {
     return;
   }
+
+  const chainedSegments = chainSegmentsFromStart(createEditor.segments);
   const km = editorDistanceKm(createEditor);
   openModal("Save your route", `
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="createState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml("Colorado")}</select></label>
-    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createEditor.segments.length} segment${createEditor.segments.length !== 1 ? "s" : ""}</p>
+    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedSegments.length} segment${chainedSegments.length !== 1 ? "s" : ""}</p>
     <div class="flex gap-2 mt-4">
       <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
       <button id="createConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -634,14 +706,14 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   document.getElementById("createConfirmBtn").addEventListener("click", () => {
     const name = document.getElementById("createName").value.trim() || "Untitled route";
     const state = document.getElementById("createState").value;
-    const firstPt = createEditor.segments[0][0];
+    const firstPt = chainedSegments[0][0];
     wishlist = [{
       id: uid(),
       name,
       location: state,
       notes: `${(km * 0.621371).toFixed(1)} mi · custom drawn route`,
       osm_url: null,
-      geometry: createEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+      geometry: chainedSegments.map((seg) => seg.map((p) => [p[0], p[1]])),
       lat: firstPt[0],
       lon: firstPt[1],
       distance_km: km,
@@ -981,7 +1053,7 @@ function openTrailMapModal(trail) {
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
     else map.setView([trail.lat, trail.lon], 12);
     activeModalMap = map;
-    activeModalMap._fitBounds = bounds.length ? bounds : null; // reused on maximize/minimize resize
+    activeModalMap._fitBounds = bounds.length ? bounds : null;
   }, 0);
 
   const pencilBtn = document.getElementById("modalPencil");
@@ -989,8 +1061,6 @@ function openTrailMapModal(trail) {
   pencilBtn.onclick = () => enterMapEditMode(trail);
 }
 
-// ---- Trail-detail map editor: erase/redraw/combine an existing trail into
-// your own custom route, without leaving the trail detail page. ----
 let editMapInstance = null;
 let modalEditor = null;
 let modalEditingTrail = null;
@@ -1013,7 +1083,6 @@ function enterMapEditMode(trail) {
     </div>
   `;
 
-  // Swap header: hide the entry pencil + maximize, show pencil/eraser/+ editing controls.
   document.getElementById("modalPencil").classList.add("hidden");
   modalMaximizeBtn.classList.add("hidden");
   const editPencilBtn = document.getElementById("modalEditPencil");
@@ -1029,7 +1098,6 @@ function enterMapEditMode(trail) {
     map.invalidateSize();
     editMapInstance = map;
     modalEditor = makeEditor(map);
-    // Start from a copy of the trail's existing geometry, not a live reference.
     modalEditor.segments = (trail.geometry || []).map((seg) => seg.map((p) => [p[0], p[1]]));
     editorRedraw(modalEditor);
     const allPts = modalEditor.segments.flat();
@@ -1047,15 +1115,18 @@ function enterMapEditMode(trail) {
   document.getElementById("editUndoBtn").onclick = () => editorUndo(modalEditor);
   document.getElementById("editClearBtn").onclick = () => editorClear(modalEditor);
   document.getElementById("editSaveBtn").onclick = () => {
-    const pointCount = modalEditor.segments.reduce((s, seg) => s + seg.length, 0);
-    if (pointCount < 2) { showToast("Add at least two points first"); return; }
+    if (!validateGeometry(modalEditor.segments)) {
+      return;
+    }
+
+    const chainedSegments = chainSegmentsFromStart(modalEditor.segments);
     const km = editorDistanceKm(modalEditor);
     const overlay = document.createElement("div");
     overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
     overlay.innerHTML = `
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="editRouteState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml(modalEditingTrail.state && ALL_STATES.includes(modalEditingTrail.state) ? modalEditingTrail.state : "Colorado")}</select></label>
-      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
+      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedSegments.length} segment${chainedSegments.length !== 1 ? "s" : ""}</p>
       <div class="flex gap-2 mt-4">
         <button id="editSaveCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Back</button>
         <button id="editSaveConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -1066,14 +1137,14 @@ function enterMapEditMode(trail) {
     overlay.querySelector("#editSaveConfirmBtn").addEventListener("click", () => {
       const name = document.getElementById("editRouteName").value.trim() || `${modalEditingTrail.name} (edited)`;
       const state = document.getElementById("editRouteState").value;
-      const firstPt = modalEditor.segments[0][0];
+      const firstPt = chainedSegments[0][0];
       wishlist = [{
         id: uid(),
         name,
         location: state,
         notes: `${(km * 0.621371).toFixed(1)} mi · edited from ${modalEditingTrail.name}`,
         osm_url: null,
-        geometry: modalEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+        geometry: chainedSegments.map((seg) => seg.map((p) => [p[0], p[1]])),
         lat: firstPt[0],
         lon: firstPt[1],
         distance_km: km,
@@ -1088,9 +1159,6 @@ function enterMapEditMode(trail) {
   };
 }
 
-// Tries an OSM-authored description first, then a Wikipedia summary for
-// well-known trails, and otherwise leaves the auto-generated fallback
-// (already shown) in place.
 async function loadBlmInfo(trail) {
   const box = document.getElementById("blmInfoBox");
   if (!box) return;
@@ -1159,7 +1227,6 @@ async function loadRichDescription(trail, suffix = "") {
     }
   } catch (err) {
     console.error("Wikipedia lookup failed:", err);
-    // leave the auto-generated/default description as-is
   }
 }
 
@@ -1264,12 +1331,10 @@ document.getElementById("detailBack").addEventListener("click", () => {
 
 let elevationChartInstance = null;
 let expandedElevationChartInstance = null;
-let lastElevationData = null; // { sampled, elevations, trailName, geometry, lat, lon } — reused by the expand modal
+let lastElevationData = null;
 let detailMiniMapInstance = null;
 const detailScrubMarker = { marker: null };
 
-// Small circular marker using the app icon, used to show where you are along
-// the trail as you drag your finger across the elevation chart.
 const scrubDivIcon = L.divIcon({
   html: `<img src="icons/icon-192.png" style="width:28px;height:28px;border-radius:50%;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);object-fit:cover;display:block;" />`,
   className: "",
@@ -1380,8 +1445,7 @@ function openElevationModal() {
     </div>
     <div class="h-[30vh]"><canvas id="modalElevationChart"></canvas></div>
   `, { mapModal: false });
-  // Force this one open large immediately — a split map+chart view benefits
-  // from more room right away rather than requiring a separate maximize tap.
+  
   modalPanel.className = "bg-paper w-full h-[88vh] max-h-[88vh] sm:max-w-2xl rounded-3xl overflow-y-auto p-5 transition-all duration-200";
 
   setTimeout(() => {
@@ -1403,20 +1467,42 @@ function openElevationModal() {
   }, 0);
 }
 
+// -------------------------------------------------------------
+// 3. loadElevationChart(trail) Distance Fix
+// Calculates cumulative physical distance without artificial straight-line
+// jumps between disconnected segments.
+// -------------------------------------------------------------
 async function loadElevationChart(trail) {
   const note = document.getElementById("elevationNote");
   try {
-    // Flatten geometry into one path with cumulative distance, then sample
-    // ~20 evenly spaced points (elevation lookups are one-point-at-a-time).
+    if (!trail.geometry || trail.geometry.length === 0) throw new Error("not enough points");
+
+    const chainedGeometry = chainSegmentsFromStart(trail.geometry);
     const allPoints = [];
-    trail.geometry.forEach((seg) => seg.forEach((pt) => allPoints.push(pt)));
+    const cum = [];
+    let totalKm = 0;
+
+    chainedGeometry.forEach((seg) => {
+      for (let i = 0; i < seg.length; i++) {
+        const pt = seg[i];
+        allPoints.push(pt);
+
+        if (cum.length === 0) {
+          cum.push(0);
+        } else if (i === 0) {
+          // Skip adding distance jump across non-contiguous segment gaps
+          cum.push(totalKm);
+        } else {
+          const prevPt = seg[i - 1];
+          const dist = haversineKm(prevPt[0], prevPt[1], pt[0], pt[1]);
+          totalKm += dist;
+          cum.push(totalKm);
+        }
+      }
+    });
+
     if (allPoints.length < 2) throw new Error("not enough points");
 
-    const cum = [0];
-    for (let i = 1; i < allPoints.length; i++) {
-      cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
-    }
-    const totalKm = cum[cum.length - 1];
     const SAMPLES = 20;
     const sampled = [];
     for (let i = 0; i < SAMPLES; i++) {
@@ -1430,7 +1516,7 @@ async function loadElevationChart(trail) {
     const resp = await fetch(`/api/elevation?locations=${encodeURIComponent(locString)}`);
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "elevation API error");
-    const elevations = data.elevations; // feet, may contain nulls for points with no data
+    const elevations = data.elevations;
 
     const known = elevations.filter((e) => e !== null && e !== undefined);
     if (known.length < 2) throw new Error("not enough elevation data returned");
@@ -1442,7 +1528,7 @@ async function loadElevationChart(trail) {
       }
     }
 
-    lastElevationData = { sampled, elevations, trailName: trail.name, geometry: trail.geometry, lat: trail.lat, lon: trail.lon };
+    lastElevationData = { sampled, elevations, trailName: trail.name, geometry: chainedGeometry, lat: trail.lat, lon: trail.lon };
     if (elevationChartInstance) elevationChartInstance.destroy();
     buildElevationChart("elevationChart", "elevationReadout", sampled, elevations, (i) => { elevationChartInstance = i; }, 160,
       (point) => updateScrubMarker(detailMiniMapInstance, detailScrubMarker, point));
