@@ -1,48 +1,3 @@
-// ---------- on-page error reporting ----------
-// Registered before anything else runs. Shows a red banner across the top
-// of the screen for ANY problem this app can detect — a thrown JS error, an
-// unhandled promise rejection, OR (critically) an expected HTML element
-// that's missing, which previously only logged to console.error and did
-// nothing else. A silent console.error is invisible on a phone with no
-// devtools access, and produces exactly the symptom "nothing happens, no
-// crash, no visible error" — this makes that class of problem impossible
-// to miss instead.
-function showFatalError(msg) {
-  console.error(msg);
-  let banner = document.getElementById("jsErrorBanner");
-  if (!banner) {
-    banner = document.createElement("div");
-    banner.id = "jsErrorBanner";
-    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#8a2f22;color:#fff;padding:10px 14px;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;";
-    document.body.appendChild(banner);
-  }
-  banner.textContent = banner.textContent ? `${banner.textContent}\n---\n${msg}` : msg;
-}
-window.addEventListener("error", (e) => {
-  showFatalError(`JS Error: ${e.message} (line ${e.lineno}, col ${e.colno})`);
-});
-window.addEventListener("unhandledrejection", (e) => {
-  showFatalError(`Unhandled promise rejection: ${e.reason && e.reason.message ? e.reason.message : e.reason}`);
-});
-
-// Immediate startup check — verifies every element this redesign depends on
-// actually exists the instant the page loads, rather than only surfacing a
-// problem later when some specific function happens to be called. If
-// index.html and app.js are ever out of sync (stale cache, partial deploy,
-// etc.) this shows a banner within the first moment of page load instead of
-// presenting as "nothing happens, nothing works, no visible error."
-(function checkRequiredElements() {
-  const required = [
-    "discoverMapView", "discoverMap", "searchThisAreaBtn", "discoverMapHint",
-    "tab-discover", "tab-create", "tab-track", "tab-journal",
-    "viewToggle", "discoverSearch", "discoverSaved",
-  ];
-  const missing = required.filter((id) => !document.getElementById(id));
-  if (missing.length > 0) {
-    showFatalError(`Startup check failed — index.html is missing: ${missing.map((id) => "#" + id).join(", ")}. This page is running an old/mismatched index.html — try a hard refresh or clear this site's data completely (not just "clear cache").`);
-  }
-})();
-
 // ---------- offline support ----------
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
@@ -165,224 +120,22 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
-// ---------- directed-path chaining & validation ----------
-// Reorders possibly-disconnected segments into the order a hiker would
-// actually walk them, starting from startPoint. Greedily attaches whichever
-// remaining segment endpoint is closest to the current chain's end,
-// reversing that segment if needed so the matched endpoint connects first.
-// This matters for combined/edited custom routes: segments were previously
-// stored in whatever order they were drawn or added via "+", which could
-// make the sampled elevation chart jump around geographically instead of
-// reading as one continuous walk.
-function chainSegmentsFromStart(segments, startPoint) {
-  const remaining = segments
-    .filter((seg) => Array.isArray(seg) && seg.length >= 2)
-    .map((seg) => seg.slice());
-  if (remaining.length === 0) return [];
-  if (remaining.length === 1) return remaining;
-
-  const dist = (a, b) => haversineKm(a[0], a[1], b[0], b[1]);
-
-  let startIdx = 0, startReversed = false, bestD = Infinity;
-  remaining.forEach((seg, i) => {
-    const dStart = dist(startPoint, seg[0]);
-    const dEnd = dist(startPoint, seg[seg.length - 1]);
-    if (dStart < bestD) { bestD = dStart; startIdx = i; startReversed = false; }
-    if (dEnd < bestD) { bestD = dEnd; startIdx = i; startReversed = true; }
-  });
-
-  const used = new Array(remaining.length).fill(false);
-  let firstSeg = remaining[startIdx];
-  if (startReversed) firstSeg = firstSeg.slice().reverse();
-  const chain = [firstSeg];
-  used[startIdx] = true;
-  let chainEnd = firstSeg[firstSeg.length - 1];
-
-  for (let step = 1; step < remaining.length; step++) {
-    let nextIdx = -1, nextReversed = false, nextD = Infinity;
-    remaining.forEach((seg, i) => {
-      if (used[i]) return;
-      const dStart = dist(chainEnd, seg[0]);
-      const dEnd = dist(chainEnd, seg[seg.length - 1]);
-      if (dStart < nextD) { nextD = dStart; nextIdx = i; nextReversed = false; }
-      if (dEnd < nextD) { nextD = dEnd; nextIdx = i; nextReversed = true; }
-    });
-    if (nextIdx === -1) break;
-    let nextSeg = remaining[nextIdx];
-    if (nextReversed) nextSeg = nextSeg.slice().reverse();
-    chain.push(nextSeg);
-    used[nextIdx] = true;
-    chainEnd = nextSeg[nextSeg.length - 1];
-  }
-  return chain;
-}
-
-// Structural sanity check before a route gets saved — catches empty
-// segments, malformed points, and out-of-range coordinates before they
-// reach localStorage or the shared database, where a bad point can
-// silently break the elevation chart or map bounds later.
-function validateGeometry(geometry) {
-  if (!Array.isArray(geometry) || geometry.length === 0) {
-    return { valid: false, error: "Route has no segments to save." };
-  }
-  let totalPoints = 0;
-  for (const seg of geometry) {
-    if (!Array.isArray(seg) || seg.length < 2) {
-      return { valid: false, error: "Route has a segment with fewer than 2 points." };
-    }
-    for (const p of seg) {
-      if (!Array.isArray(p) || p.length < 2) {
-        return { valid: false, error: "Route has a malformed point." };
-      }
-      const [lat, lon] = p;
-      if (typeof lat !== "number" || typeof lon !== "number" || Number.isNaN(lat) || Number.isNaN(lon)) {
-        return { valid: false, error: "Route has a non-numeric coordinate." };
-      }
-      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        return { valid: false, error: "Route has a coordinate out of valid range." };
-      }
-    }
-    totalPoints += seg.length;
-  }
-  if (totalPoints < 2) {
-    return { valid: false, error: "Add at least two points before saving." };
-  }
-  return { valid: true, error: null };
-}
-
-// Finds whichever segment endpoint (a segment's first or last point) is
-// closest to a given point. Used both to snap a dragged Start/End marker
-// onto a real point in the route, and to figure out which segment+end a
-// marker currently represents when building the final chained geometry.
-function findClosestSegmentEndpoint(segments, point) {
-  let best = null;
-  segments.forEach((seg, segIdx) => {
-    if (!Array.isArray(seg) || seg.length < 2) return;
-    const startP = seg[0];
-    const endP = seg[seg.length - 1];
-    const dStart = haversineKm(point[0], point[1], startP[0], startP[1]);
-    const dEnd = haversineKm(point[0], point[1], endP[0], endP[1]);
-    if (!best || dStart < best.dist) best = { segIdx, end: "start", point: startP, dist: dStart };
-    if (!best || dEnd < best.dist) best = { segIdx, end: "end", point: endP, dist: dEnd };
-  });
-  return best;
-}
-
-// Chains segments into walking order using explicit start/end points chosen
-// by the user (the draggable S/E markers), rather than guessing. The
-// segment touching the start marker is placed first (oriented so that
-// endpoint comes first); the segment touching the end marker is placed
-// last (oriented so that endpoint comes last); everything else in between
-// is chained via nearest-neighbor, same approach as before. This removes
-// the ambiguity that made chainSegmentsFromStart's automatic guess
-// sometimes pick a technically-valid but unintended order for combined
-// routes.
-function chainSegmentsWithEndpoints(segments, startPoint, endPoint) {
-  const valid = segments
-    .filter((seg) => Array.isArray(seg) && seg.length >= 2)
-    .map((seg) => seg.slice());
-  if (valid.length === 0) return [];
-
-  if (valid.length === 1) {
-    const seg = valid[0];
-    const dStart = startPoint ? haversineKm(startPoint[0], startPoint[1], seg[0][0], seg[0][1]) : 0;
-    const dEndAsStart = startPoint ? haversineKm(startPoint[0], startPoint[1], seg[seg.length - 1][0], seg[seg.length - 1][1]) : 0;
-    return dEndAsStart < dStart ? [seg.slice().reverse()] : [seg];
-  }
-
-  const effectiveStart = startPoint || valid[0][0];
-  const effectiveEnd = endPoint || valid[valid.length - 1][valid[valid.length - 1].length - 1];
-
-  const startMatch = findClosestSegmentEndpoint(valid, effectiveStart);
-  let endMatch = findClosestSegmentEndpoint(valid, effectiveEnd);
-
-  // If both markers snapped to the same segment (e.g. only that segment's
-  // endpoints are close to both), pick the best DISTINCT-segment match for
-  // the end marker instead, so start and end don't collapse onto one piece.
-  if (endMatch.segIdx === startMatch.segIdx) {
-    let best = null;
-    valid.forEach((seg, segIdx) => {
-      if (segIdx === startMatch.segIdx) return;
-      const startP = seg[0];
-      const endP = seg[seg.length - 1];
-      const dStart = haversineKm(effectiveEnd[0], effectiveEnd[1], startP[0], startP[1]);
-      const dEnd = haversineKm(effectiveEnd[0], effectiveEnd[1], endP[0], endP[1]);
-      if (!best || dStart < best.dist) best = { segIdx, end: "start", point: startP, dist: dStart };
-      if (!best || dEnd < best.dist) best = { segIdx, end: "end", point: endP, dist: dEnd };
-    });
-    if (best) endMatch = best;
-  }
-
-  let firstSeg = valid[startMatch.segIdx].slice();
-  if (startMatch.end === "end") firstSeg = firstSeg.reverse();
-
-  let lastSeg = valid[endMatch.segIdx].slice();
-  if (endMatch.end === "start") lastSeg = lastSeg.reverse();
-
-  const middleSegments = valid.filter((_, i) => i !== startMatch.segIdx && i !== endMatch.segIdx);
-  const used = new Array(middleSegments.length).fill(false);
-  const chain = [firstSeg];
-  let chainEnd = firstSeg[firstSeg.length - 1];
-
-  for (let step = 0; step < middleSegments.length; step++) {
-    let nextIdx = -1, nextReversed = false, nextD = Infinity;
-    middleSegments.forEach((seg, i) => {
-      if (used[i]) return;
-      const dStart = haversineKm(chainEnd[0], chainEnd[1], seg[0][0], seg[0][1]);
-      const dEnd = haversineKm(chainEnd[0], chainEnd[1], seg[seg.length - 1][0], seg[seg.length - 1][1]);
-      if (dStart < nextD) { nextD = dStart; nextIdx = i; nextReversed = false; }
-      if (dEnd < nextD) { nextD = dEnd; nextIdx = i; nextReversed = true; }
-    });
-    if (nextIdx === -1) break;
-    let nextSeg = middleSegments[nextIdx];
-    if (nextReversed) nextSeg = nextSeg.slice().reverse();
-    chain.push(nextSeg);
-    used[nextIdx] = true;
-    chainEnd = nextSeg[nextSeg.length - 1];
-  }
-
-  chain.push(lastSeg);
-  return chain;
-}
-
 function updateStatLine() {
   const total = hikes.reduce((s, h) => s + (h.distance || 0), 0);
   document.getElementById("statLine").textContent = `${hikes.length} hikes logged · ${fmtDist(total)} total`;
 }
 
 // ---------- tab switching ----------
-// Small helper used throughout the new map-view wiring: attaches a click
-// listener only if the element actually exists, logging a clear console
-// error instead of throwing. A single missing/mismatched element used to
-// be able to crash the whole script at load time (an uncaught exception in
-// top-level code halts everything after it) — this contains that failure
-// to just the one broken feature instead of taking down every button.
-function safeOnClick(id, handler) {
-  const el = document.getElementById(id);
-  if (!el) {
-    showFatalError(`Missing element #${id} — index.html and app.js are out of sync (try a hard refresh / clear site data).`);
-    return;
-  }
-  el.addEventListener("click", handler);
-}
-
 const tabs = ["discover", "create", "track", "journal"];
-
 function switchTab(tab) {
   tabs.forEach((t) => {
-    const section = document.getElementById(`tab-${t}`);
-    if (section) section.classList.toggle("hidden", t !== tab);
+    document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
   });
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
   if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
-  if (tab === "discover" && currentView === "map") setTimeout(() => {
-    ensureDiscoverMap();
-    if (discoverMap) discoverMap.invalidateSize();
-    updateSearchThisAreaButton();
-  }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -634,72 +387,8 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 // nearby points (can leave a gap mid-trail), undo, clear, and merge in
 // another saved trail as an extra piece. One shared engine avoids having to
 // keep two copies of this logic in sync.
-function makeEditor(map, onEndpointChange) {
-  return {
-    map, segments: [], mode: "pencil", polylineLayer: null,
-    markerGroup: L.layerGroup().addTo(map), freshSegment: true,
-    endpointGroup: L.layerGroup().addTo(map),
-    startPoint: null, endPoint: null, startMarker: null, endMarker: null,
-    onEndpointChange: onEndpointChange || null,
-  };
-}
-
-const START_MARKER_ICON = L.divIcon({
-  html: `<div style="width:26px;height:26px;border-radius:50%;background:#2f9e44;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-weight:700;font-size:12px;">S</div>`,
-  className: "", iconSize: [26, 26], iconAnchor: [13, 13],
-});
-const END_MARKER_ICON = L.divIcon({
-  html: `<div style="width:26px;height:26px;border-radius:50%;background:#2563EB;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;color:#fff;font-family:sans-serif;font-weight:700;font-size:12px;">E</div>`,
-  className: "", iconSize: [26, 26], iconAnchor: [13, 13],
-});
-
-// Renders (or refreshes) the draggable Start/End markers a person uses to
-// tell the editor exactly which end of a combined/edited route is the real
-// trailhead and which is the real finish — resolving the ambiguity that a
-// fully-automatic guess can't. Markers snap onto real segment endpoints
-// only (not arbitrary map taps), and dragging one re-chains the route via
-// chainSegmentsWithEndpoints so the order/orientation always matches
-// what's shown. If the point a marker was on gets erased/undone, it
-// falls back to a sensible default instead of pointing at nothing.
-function editorUpdateEndpoints(editor) {
-  const validSegs = editor.segments.filter((seg) => Array.isArray(seg) && seg.length >= 2);
-  if (validSegs.length === 0) {
-    editor.endpointGroup.clearLayers();
-    editor.startMarker = null;
-    editor.endMarker = null;
-    editor.startPoint = null;
-    editor.endPoint = null;
-    return;
-  }
-
-  const allEndpoints = [];
-  validSegs.forEach((seg) => { allEndpoints.push(seg[0]); allEndpoints.push(seg[seg.length - 1]); });
-  const pointExists = (p) => p && allEndpoints.some((ep) => ep[0] === p[0] && ep[1] === p[1]);
-  if (!pointExists(editor.startPoint)) editor.startPoint = validSegs[0][0];
-  if (!pointExists(editor.endPoint)) editor.endPoint = validSegs[validSegs.length - 1][validSegs[validSegs.length - 1].length - 1];
-
-  editor.endpointGroup.clearLayers();
-  editor.startMarker = L.marker(editor.startPoint, { icon: START_MARKER_ICON, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
-  editor.endMarker = L.marker(editor.endPoint, { icon: END_MARKER_ICON, draggable: true, zIndexOffset: 1000 }).addTo(editor.endpointGroup);
-
-  editor.startMarker.on("dragend", () => {
-    const dragged = editor.startMarker.getLatLng();
-    const match = findClosestSegmentEndpoint(editor.segments.filter((s) => s.length >= 2), [dragged.lat, dragged.lng]);
-    if (match) {
-      editor.startPoint = match.point;
-      editor.startMarker.setLatLng(match.point);
-    }
-    if (editor.onEndpointChange) editor.onEndpointChange();
-  });
-  editor.endMarker.on("dragend", () => {
-    const dragged = editor.endMarker.getLatLng();
-    const match = findClosestSegmentEndpoint(editor.segments.filter((s) => s.length >= 2), [dragged.lat, dragged.lng]);
-    if (match) {
-      editor.endPoint = match.point;
-      editor.endMarker.setLatLng(match.point);
-    }
-    if (editor.onEndpointChange) editor.onEndpointChange();
-  });
+function makeEditor(map) {
+  return { map, segments: [], mode: "pencil", polylineLayer: null, markerGroup: L.layerGroup().addTo(map), freshSegment: true };
 }
 
 function editorRedraw(editor) {
@@ -723,35 +412,11 @@ function editorRedraw(editor) {
       }).addTo(editor.markerGroup);
     });
   });
-  editorUpdateEndpoints(editor);
-}
-
-// Looks for an existing point (from any segment already on the map — a
-// saved trail you started from, one added via "+", or your own earlier
-// drawing) within ~20 screen pixels of a tap. Used so a newly hand-drawn
-// connector can lock exactly onto a real trail's endpoint instead of
-// landing a few feet off — a gap that small still reads as "not merged"
-// and silently leaves that stretch out of the mileage total, since two
-// trails that meet at roughly the same trailhead almost never share an
-// exact coordinate in the source map data.
-function editorFindNearbyVertex(editor, latlng, radiusPx) {
-  const tapPoint = editor.map.latLngToContainerPoint(latlng);
-  let best = null;
-  editor.segments.forEach((seg) => {
-    seg.forEach((p) => {
-      const pt = editor.map.latLngToContainerPoint(p);
-      const d = Math.hypot(pt.x - tapPoint.x, pt.y - tapPoint.y);
-      if (d <= radiusPx && (!best || d < best.dist)) best = { point: p, dist: d };
-    });
-  });
-  return best ? best.point : null;
 }
 
 function editorClick(editor, latlng) {
+  const point = [latlng.lat, latlng.lng];
   if (editor.mode === "pencil") {
-    const SNAP_RADIUS_PX = 20;
-    const nearby = editorFindNearbyVertex(editor, latlng, SNAP_RADIUS_PX);
-    const point = nearby ? [nearby[0], nearby[1]] : [latlng.lat, latlng.lng];
     if (editor.segments.length === 0 || editor.freshSegment) {
       editor.segments.push([]);
       editor.freshSegment = false;
@@ -880,7 +545,7 @@ function ensureCreateMap() {
   if (createMap) return createMap;
   createMap = L.map("createMap").setView([39.5, -98.35], 4);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
-  createEditor = makeEditor(createMap, updateCreateStats);
+  createEditor = makeEditor(createMap);
   createMap.on("click", (e) => {
     editorClick(createEditor, e.latlng);
     updateCreateStats();
@@ -955,23 +620,11 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
     showToast("Add at least two points first");
     return;
   }
-
-  const chainedGeometry = chainSegmentsWithEndpoints(createEditor.segments, createEditor.startPoint, createEditor.endPoint);
-  const validation = validateGeometry(chainedGeometry);
-  if (!validation.valid) {
-    showToast(validation.error);
-    return;
-  }
-
-  const km = chainedGeometry.reduce((sum, seg) => {
-    for (let i = 1; i < seg.length; i++) sum += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
-    return sum;
-  }, 0);
-
+  const km = editorDistanceKm(createEditor);
   openModal("Save your route", `
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="createName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="My custom loop" autofocus /></label>
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="createState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml("Colorado")}</select></label>
-    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedGeometry.length} segment${chainedGeometry.length !== 1 ? "s" : ""}</p>
+    <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${createEditor.segments.length} segment${createEditor.segments.length !== 1 ? "s" : ""}</p>
     <div class="flex gap-2 mt-4">
       <button id="createCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Cancel</button>
       <button id="createConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -981,14 +634,14 @@ document.getElementById("createSaveBtn").addEventListener("click", () => {
   document.getElementById("createConfirmBtn").addEventListener("click", () => {
     const name = document.getElementById("createName").value.trim() || "Untitled route";
     const state = document.getElementById("createState").value;
-    const firstPt = chainedGeometry[0][0];
+    const firstPt = createEditor.segments[0][0];
     wishlist = [{
       id: uid(),
       name,
       location: state,
       notes: `${(km * 0.621371).toFixed(1)} mi · custom drawn route`,
       osm_url: null,
-      geometry: chainedGeometry.map((seg) => seg.map((p) => [p[0], p[1]])),
+      geometry: createEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
       lat: firstPt[0],
       lon: firstPt[1],
       distance_km: km,
@@ -1064,7 +717,7 @@ document.getElementById("addHikeBtn").addEventListener("click", () => {
 });
 
 // ================= DISCOVER =================
-let currentView = "map";
+let currentView = "search";
 let currentDifficulty = "All";
 let lastResults = [];
 let searchMode = "name";
@@ -1085,205 +738,16 @@ document.querySelectorAll("#searchModeToggle .seg").forEach((btn) => {
   });
 });
 
-// Shared by the toggle row — keeps the Map/Search/Saved sub-views in sync.
-function setDiscoverView(view) {
-  currentView = view;
-  document.querySelectorAll("#viewToggle .seg").forEach((b) => {
-    b.classList.toggle("active", b.dataset.view === view);
-  });
-  const mapEl = document.getElementById("discoverMapView");
-  const searchEl = document.getElementById("discoverSearch");
-  const savedEl = document.getElementById("discoverSaved");
-  if (mapEl) mapEl.classList.toggle("hidden", view !== "map");
-  if (searchEl) searchEl.classList.toggle("hidden", view !== "search");
-  if (savedEl) savedEl.classList.toggle("hidden", view !== "saved");
-  if (view === "saved") renderSaved();
-  if (view === "map") {
-    setTimeout(() => {
-      ensureDiscoverMap();
-      if (discoverMap) discoverMap.invalidateSize();
-      updateSearchThisAreaButton();
-    }, 50);
-  }
-}
-
 document.querySelectorAll("#viewToggle .seg").forEach((btn) => {
-  btn.addEventListener("click", () => setDiscoverView(btn.dataset.view));
-});
-
-// ---- Map-first Discover landing view ----
-// Deliberately does NOT fetch on every pan/zoom — Overpass is free, shared
-// infrastructure and rate-limits aggressively. Pins load on initial view
-// (if already zoomed in enough) and via the "Search this area" button,
-// same pattern most map apps use for exactly this reason.
-let discoverMap = null;
-let discoverMapMarkers = null;
-let lastFetchedBounds = null;
-const MAP_PINS_MAX_SPAN_DEG = 1.5; // mirrors the server-side guard in /api/map-pins
-
-// Colorado Front Range as a starting view — provisional default that
-// happens to have good COTREX/OSM trail coverage so first load shows real
-// pins immediately rather than an empty "zoom in" prompt. Worth revisiting
-// later (e.g. geolocation-based centering) if that'd serve users better.
-const DISCOVER_MAP_DEFAULT_CENTER = [39.1, -105.4];
-const DISCOVER_MAP_DEFAULT_ZOOM = 10;
-
-const TRAIL_PIN_ICON = L.divIcon({
-  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#1B4332;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🥾</span></div>`,
-  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
-});
-const PARK_PIN_ICON = L.divIcon({
-  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#E3B23C;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🏞️</span></div>`,
-  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
-});
-const AREA_PIN_ICON = L.divIcon({
-  html: `<div style="width:30px;height:30px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:#8a2f22;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.4);display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:14px;">🌲</span></div>`,
-  className: "", iconSize: [30, 30], iconAnchor: [15, 30],
-});
-
-function ensureDiscoverMap() {
-  if (discoverMap) return discoverMap;
-  const mapEl = document.getElementById("discoverMap");
-  if (!mapEl) {
-    showFatalError("Missing #discoverMap — index.html and app.js are out of sync (try a hard refresh / clear site data).");
-    return null;
-  }
-  discoverMap = L.map("discoverMap", { attributionControl: false }).setView(DISCOVER_MAP_DEFAULT_CENTER, DISCOVER_MAP_DEFAULT_ZOOM);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(discoverMap);
-  discoverMapMarkers = L.layerGroup().addTo(discoverMap);
-  discoverMap.on("moveend zoomend", updateSearchThisAreaButton);
-  // First load: if the default view is already zoomed in enough, load pins
-  // right away instead of making the person tap the button unnecessarily.
-  setTimeout(() => loadMapPins(), 100);
-  return discoverMap;
-}
-
-function discoverMapBoundsSpan(bounds) {
-  return { latSpan: bounds.getNorth() - bounds.getSouth(), lonSpan: bounds.getEast() - bounds.getWest() };
-}
-
-function updateSearchThisAreaButton() {
-  const btn = document.getElementById("searchThisAreaBtn");
-  const hint = document.getElementById("discoverMapHint");
-  if (!discoverMap || !btn || !hint) return;
-  const { latSpan, lonSpan } = discoverMapBoundsSpan(discoverMap.getBounds());
-  const tooWide = latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG;
-  if (tooWide) {
-    btn.classList.add("hidden");
-    hint.textContent = "Zoom in a bit more to load trails and parks here.";
-    hint.classList.remove("hidden");
-  } else {
-    btn.classList.remove("hidden");
-  }
-}
-
-async function loadMapPins() {
-  if (!discoverMap) return;
-  const bounds = discoverMap.getBounds();
-  const { latSpan, lonSpan } = discoverMapBoundsSpan(bounds);
-  if (latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG) {
-    updateSearchThisAreaButton();
-    return;
-  }
-
-  const hint = document.getElementById("discoverMapHint");
-  const btn = document.getElementById("searchThisAreaBtn");
-  if (!hint || !btn) {
-    showFatalError("Missing #discoverMapHint or #searchThisAreaBtn — index.html and app.js are out of sync (try a hard refresh / clear site data).");
-    return;
-  }
-  hint.textContent = "Loading trails and parks…";
-  hint.classList.remove("hidden");
-  btn.classList.add("hidden");
-
-  const sw = bounds.getSouthWest();
-  const ne = bounds.getNorthEast();
-
-  try {
-    const params = new URLSearchParams({ swLat: sw.lat, swLon: sw.lng, neLat: ne.lat, neLon: ne.lng });
-    // Render's free tier can take 30-60s to wake from idle. Without a
-    // timeout, a slow/hanging first request leaves "Loading…" stuck with
-    // no visible signal that anything is wrong — this guarantees a message
-    // appears either way instead of hanging indefinitely.
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 20000);
-    let resp;
-    try {
-      resp = await fetch(`/api/map-pins?${params.toString()}`, { signal: controller.signal });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-    const data = await resp.json();
-    if (!resp.ok) {
-      hint.textContent = data.error || "Couldn't load this area.";
-      btn.classList.remove("hidden");
-      return;
-    }
-    renderMapPins(data);
-    lastFetchedBounds = bounds;
-    const parkAndAreaCount = data.parks.length + data.areas.length;
-    hint.textContent = (data.trails.length === 0 && parkAndAreaCount === 0)
-      ? "Nothing found in this area. Try panning or zooming out a bit."
-      : `${data.trails.length} trail${data.trails.length !== 1 ? "s" : ""} · ${parkAndAreaCount} park${parkAndAreaCount !== 1 ? "s" : ""}/area${parkAndAreaCount !== 1 ? "s" : ""} shown.`;
-  } catch (err) {
-    console.error("Map pins load failed:", err);
-    hint.textContent = err.name === "AbortError"
-      ? "Timed out waiting for the server (it may be waking up from idle) — tap Search this area to retry."
-      : "Couldn't reach the server. Is it running?";
-    btn.classList.remove("hidden");
-  }
-}
-
-function renderMapPins(data) {
-  discoverMapMarkers.clearLayers();
-
-  data.trails.forEach((t) => {
-    const marker = L.marker([t.lat, t.lon], { icon: TRAIL_PIN_ICON }).addTo(discoverMapMarkers);
-    marker.bindTooltip(`${escapeHtml(t.name)} · ${(t.distance_km * 0.621371).toFixed(1)} mi`, { direction: "top", offset: [0, -28] });
-    marker.on("click", () => openTrailDetail({
-      name: t.name,
-      state: "",
-      distance_km: t.distance_km,
-      difficulty: t.difficulty,
-      surface: t.surface,
-      segments: t.segments,
-      geometry: t.geometry,
-      lat: t.lat,
-      lon: t.lon,
-      osm_url: null,
-    }));
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#viewToggle .seg").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentView = btn.dataset.view;
+    document.getElementById("discoverSearch").classList.toggle("hidden", currentView !== "search");
+    document.getElementById("discoverSaved").classList.toggle("hidden", currentView !== "saved");
+    if (currentView === "saved") renderSaved();
   });
-
-  data.parks.forEach((p) => {
-    const marker = L.marker([p.lat, p.lon], { icon: PARK_PIN_ICON }).addTo(discoverMapMarkers);
-    marker.bindTooltip(escapeHtml(p.name), { direction: "top", offset: [0, -28] });
-    marker.on("click", () => openParkDetail({
-      name: p.name,
-      state: "",
-      kind: p.kind,
-      lat: p.lat,
-      lon: p.lon,
-      osm_url: `https://www.openstreetmap.org/?mlat=${p.lat}&mlon=${p.lon}#map=13/${p.lat}/${p.lon}`,
-    }));
-  });
-
-  data.areas.forEach((a) => {
-    const marker = L.marker([a.lat, a.lon], { icon: AREA_PIN_ICON }).addTo(discoverMapMarkers);
-    marker.bindTooltip(escapeHtml(a.name), { direction: "top", offset: [0, -28] });
-    marker.on("click", () => openParkDetail({
-      name: a.name,
-      state: "",
-      kind: a.kind,
-      lat: a.lat,
-      lon: a.lon,
-      osm_url: `https://www.openstreetmap.org/?mlat=${a.lat}&mlon=${a.lon}#map=12/${a.lat}/${a.lon}`,
-    }));
-  });
-}
-
-safeOnClick("searchThisAreaBtn", loadMapPins);
-
-
+});
 
 let ALL_STATES = [];
 async function loadStates() {
@@ -1564,7 +1028,7 @@ function enterMapEditMode(trail) {
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
     map.invalidateSize();
     editMapInstance = map;
-    modalEditor = makeEditor(map, null);
+    modalEditor = makeEditor(map);
     // Start from a copy of the trail's existing geometry, not a live reference.
     modalEditor.segments = (trail.geometry || []).map((seg) => seg.map((p) => [p[0], p[1]]));
     editorRedraw(modalEditor);
@@ -1585,25 +1049,13 @@ function enterMapEditMode(trail) {
   document.getElementById("editSaveBtn").onclick = () => {
     const pointCount = modalEditor.segments.reduce((s, seg) => s + seg.length, 0);
     if (pointCount < 2) { showToast("Add at least two points first"); return; }
-
-    const chainedGeometry = chainSegmentsWithEndpoints(modalEditor.segments, modalEditor.startPoint, modalEditor.endPoint);
-    const validation = validateGeometry(chainedGeometry);
-    if (!validation.valid) {
-      showToast(validation.error);
-      return;
-    }
-
-    const km = chainedGeometry.reduce((sum, seg) => {
-      for (let i = 1; i < seg.length; i++) sum += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
-      return sum;
-    }, 0);
-
+    const km = editorDistanceKm(modalEditor);
     const overlay = document.createElement("div");
     overlay.className = "absolute inset-0 bg-paper z-[1200] p-5 overflow-y-auto rounded-3xl";
     overlay.innerHTML = `
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input id="editRouteName" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" placeholder="${escapeHtml(modalEditingTrail.name)} (edited)" autofocus /></label>
       <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">State</span><select id="editRouteState" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm">${stateOptionsHtml(modalEditingTrail.state && ALL_STATES.includes(modalEditingTrail.state) ? modalEditingTrail.state : "Colorado")}</select></label>
-      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${chainedGeometry.length} segment${chainedGeometry.length !== 1 ? "s" : ""}</p>
+      <p class="text-sm opacity-70 mb-3">${(km * 0.621371).toFixed(1)} mi · ${modalEditor.segments.length} segment${modalEditor.segments.length !== 1 ? "s" : ""}</p>
       <div class="flex gap-2 mt-4">
         <button id="editSaveCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Back</button>
         <button id="editSaveConfirmBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Save</button>
@@ -1614,14 +1066,14 @@ function enterMapEditMode(trail) {
     overlay.querySelector("#editSaveConfirmBtn").addEventListener("click", () => {
       const name = document.getElementById("editRouteName").value.trim() || `${modalEditingTrail.name} (edited)`;
       const state = document.getElementById("editRouteState").value;
-      const firstPt = chainedGeometry[0][0];
+      const firstPt = modalEditor.segments[0][0];
       wishlist = [{
         id: uid(),
         name,
         location: state,
         notes: `${(km * 0.621371).toFixed(1)} mi · edited from ${modalEditingTrail.name}`,
         osm_url: null,
-        geometry: chainedGeometry.map((seg) => seg.map((p) => [p[0], p[1]])),
+        geometry: modalEditor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
         lat: firstPt[0],
         lon: firstPt[1],
         distance_km: km,
@@ -1954,29 +1406,15 @@ function openElevationModal() {
 async function loadElevationChart(trail) {
   const note = document.getElementById("elevationNote");
   try {
-    // Flatten geometry, tracking which points start a new segment.
-    // Combined/edited custom routes can have segments that don't
-    // physically touch (stitched trails, eraser gaps) — the distance
-    // "between" segments isn't real walked distance and must NOT be
-    // added to cumulative mileage, or sample spacing and the scrub
-    // marker both get thrown off by a fake multi-mile jump.
+    // Flatten geometry into one path with cumulative distance, then sample
+    // ~20 evenly spaced points (elevation lookups are one-point-at-a-time).
     const allPoints = [];
-    const isSegmentStart = [];
-    trail.geometry.forEach((seg) => {
-      seg.forEach((pt, i) => {
-        allPoints.push(pt);
-        isSegmentStart.push(i === 0);
-      });
-    });
+    trail.geometry.forEach((seg) => seg.forEach((pt) => allPoints.push(pt)));
     if (allPoints.length < 2) throw new Error("not enough points");
 
     const cum = [0];
     for (let i = 1; i < allPoints.length; i++) {
-      if (isSegmentStart[i]) {
-        cum.push(cum[i - 1]);
-      } else {
-        cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
-      }
+      cum.push(cum[i - 1] + haversineKm(allPoints[i - 1][0], allPoints[i - 1][1], allPoints[i][0], allPoints[i][1]));
     }
     const totalKm = cum[cum.length - 1];
     const SAMPLES = 20;
@@ -2108,4 +1546,202 @@ async function runSearch() {
     return;
   }
 
-  status.textContent = searchMode === "city
+  status.textContent = searchMode === "city"
+    ? `Finding trails near ${q}, ${state}…`
+    : `Searching live OpenStreetMap data for ${state}…`;
+  document.getElementById("results").innerHTML = "";
+  searchBtn.disabled = true;
+
+  try {
+    const params = new URLSearchParams({ state });
+    if (searchMode === "city") {
+      params.set("near", q);
+    } else if (q) {
+      params.set("q", q);
+    }
+    const res = await fetch(`/api/trails?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      status.textContent = `Error: ${data.error || "something went wrong"}`;
+      return;
+    }
+    lastResults = data.trails;
+    const locationLabel = searchMode === "city" ? `near ${q}` : `in ${state}`;
+    status.textContent = `${data.trails.length} named trail${data.trails.length !== 1 ? "s" : ""} found ${locationLabel}${data.cached ? " (cached)" : ""}. Distances are approximate, computed from mapped geometry.`;
+    renderSearchResults(lastResults);
+  } catch (err) {
+    status.textContent = "Couldn't reach the server. Is it running?";
+    console.error(err);
+  } finally {
+    searchBtn.disabled = false;
+  }
+}
+
+document.getElementById("searchBtn").addEventListener("click", runSearch);
+document.getElementById("query").addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+document.querySelectorAll("#difficultyFilters .chip").forEach((chip) => {
+  chip.addEventListener("click", () => {
+    document.querySelectorAll("#difficultyFilters .chip").forEach((c) => c.classList.remove("active"));
+    chip.classList.add("active");
+    currentDifficulty = chip.dataset.difficulty;
+    renderSearchResults(lastResults);
+  });
+});
+
+// ---- saved / wishlist ----
+function saveToWishlist(trail) {
+  if (wishlist.some((w) => w.name === trail.name)) { showToast("Already on your list"); return; }
+  wishlist = [{
+    id: uid(),
+    name: trail.name,
+    location: trail.state,
+    notes: `${(trail.distance_km * 0.621371).toFixed(1)} mi · ${trail.difficulty}`,
+    osm_url: trail.osm_url,
+    geometry: trail.geometry || null,
+    lat: trail.lat,
+    lon: trail.lon,
+  }, ...wishlist];
+  saveWishlist(wishlist);
+  showToast("Saved to your list");
+  populateTrailPicker();
+  populateCreateBasePicker();
+}
+
+function renderSaved() {
+  const el = document.getElementById("savedList");
+  if (wishlist.length === 0) {
+    el.innerHTML = `<div class="text-center text-sm opacity-60 py-8">Nothing saved yet — search a state and tap Save on a trail.</div>`;
+    return;
+  }
+  el.innerHTML = wishlist.map((w) => `
+    <div class="relative bg-card border border-line rounded-2xl p-4">
+      <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
+      <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
+      <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(w.location || "")}</p>
+      ${w.notes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(w.notes)}</p>` : ""}
+      <div class="flex gap-2 mt-3 flex-wrap">
+        ${w.geometry ? `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-track-wish="${w.id}">Track this</button>` : ""}
+        <button class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition" data-complete-wish="${w.id}">Mark as hiked</button>
+        ${w.custom && w.geometry
+          ? w.addedToDb
+            ? `<span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium self-center">✓ In shared database</span>`
+            : `<button class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition" data-submit-wish="${w.id}">Add to database</button>`
+          : ""}
+        ${w.osm_url ? `<a class="block text-sm text-pine underline mt-2" href="${w.osm_url}" target="_blank" rel="noopener">Map →</a>` : ""}
+      </div>
+    </div>
+  `).join("");
+
+  el.querySelectorAll("[data-submit-wish]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const w = wishlist.find((x) => x.id === btn.dataset.submitWish);
+      btn.textContent = "Adding…";
+      btn.disabled = true;
+      try {
+        const resp = await fetch("/api/community-trails", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: w.name, state: w.location, geometry: w.geometry,
+            distance_km: w.distance_km || 0, notes: w.notes, lat: w.lat, lon: w.lon,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          showToast(data.error || "Couldn't add to the shared database");
+          btn.textContent = "Add to database";
+          btn.disabled = false;
+          return;
+        }
+        w.addedToDb = true;
+        saveWishlist(wishlist);
+        showToast(`${w.name} added to the shared database — now searchable by everyone`);
+        renderSaved();
+      } catch (err) {
+        console.error(err);
+        showToast("Couldn't reach the server");
+        btn.textContent = "Add to database";
+        btn.disabled = false;
+      }
+    });
+  });
+
+  el.querySelectorAll("[data-detail-wish]").forEach((el2) => {
+    el2.addEventListener("click", () => {
+      const w = wishlist.find((x) => x.id === el2.dataset.detailWish);
+      openTrailDetail({
+        name: w.name, state: w.location, distance_km: null, difficulty: null,
+        surface: null, segments: null, geometry: w.geometry, lat: w.lat, lon: w.lon,
+        osm_url: w.osm_url, savedNotes: w.notes,
+      });
+    });
+  });
+  el.querySelectorAll("[data-delete-wish]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      wishlist = wishlist.filter((w) => w.id !== btn.dataset.deleteWish);
+      saveWishlist(wishlist);
+      renderSaved();
+      populateTrailPicker();
+      populateCreateBasePicker();
+    });
+  });
+  el.querySelectorAll("[data-complete-wish]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const trail = wishlist.find((w) => w.id === btn.dataset.completeWish);
+      openCompleteModal({ name: trail.name, state: trail.location, notes: trail.notes, wishId: trail.id });
+    });
+  });
+  el.querySelectorAll("[data-track-wish]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      switchTab("track");
+      document.getElementById("trailPicker").value = btn.dataset.trackWish;
+      selectTrailToFollow(btn.dataset.trackWish);
+    });
+  });
+}
+
+function openCompleteModal(trail) {
+  openModal(`Hiked: ${trail.name}`, `
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Date</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDate" type="date" value="${new Date().toISOString().slice(0, 10)}" /></label>
+    <div class="flex gap-2.5">
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Distance (km)</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cDist" type="number" step="0.1" value="${trail.distance_km ? trail.distance_km.toFixed(1) : ""}" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Hours</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cH" type="number" placeholder="2" /></label>
+      <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Min</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cM" type="number" placeholder="30" /></label>
+    </div>
+    <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="cNotes" rows="2" placeholder="${escapeHtml(trail.notes || "")}"></textarea></label>
+    <div class="flex gap-2 mt-4">
+      <button id="cSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition w-full">Move to journal</button>
+    </div>
+  `);
+  document.getElementById("cSaveBtn").addEventListener("click", () => {
+    const date = document.getElementById("cDate").value;
+    const distMi = parseFloat(document.getElementById("cDist").value) || 0;
+    const h = parseInt(document.getElementById("cH").value) || 0;
+    const m = parseInt(document.getElementById("cM").value) || 0;
+    const notes = document.getElementById("cNotes").value.trim() || trail.notes || "";
+    hikes = [{ id: uid(), date: date ? new Date(date).toISOString() : new Date().toISOString(), name: trail.name, distance: distMi * 1609.34, duration: h * 3600 + m * 60, notes, path: null, source: "manual" }, ...hikes];
+    saveHikes(hikes);
+    if (trail.wishId) {
+      wishlist = wishlist.filter((w) => w.id !== trail.wishId);
+      saveWishlist(wishlist);
+    }
+    closeModal();
+    showToast("Moved to your journal");
+    renderJournal();
+    updateStatLine();
+    switchTab("journal");
+  });
+}
+
+// ---------- init ----------
+window.addEventListener("beforeunload", () => {
+  clearInterval(timerId);
+  if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+});
+
+updateStatLine();
+renderJournal();
+loadStates();
+populateTrailPicker();
+populateCreateBasePicker();
+switchTab("discover");
