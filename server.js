@@ -994,6 +994,165 @@ app.get("/api/elevation", async (req, res) => {
   res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/map-pins?swLat=&swLon=&neLat=&neLon=
+//
+// Bounding-box endpoint for the map-first Discover redesign: given a Leaflet
+// map's current viewport (map.getBounds()), returns trails + parks + rec/
+// conservation areas that fall inside it, in one combined Overpass call.
+//
+// IMPORTANT Overpass syntax note (this exact bug silently broke an earlier
+// version of this endpoint): the geo-filter — (bbox) or (around:...) — MUST
+// come immediately after the element type keyword, BEFORE any tag brackets.
+// way(bbox)["tag"]  -- correct
+// way["tag"](bbox)  -- WRONG, silently returns zero results, no error
+// ---------------------------------------------------------------------------
+const MAP_PINS_MAX_SPAN_DEG = 1.5;
+
+app.get("/api/map-pins", async (req, res) => {
+  const swLat = parseFloat(req.query.swLat);
+  const swLon = parseFloat(req.query.swLon);
+  const neLat = parseFloat(req.query.neLat);
+  const neLon = parseFloat(req.query.neLon);
+
+  if ([swLat, swLon, neLat, neLon].some((v) => Number.isNaN(v))) {
+    return res.status(400).json({ error: "Missing or invalid swLat, swLon, neLat, neLon query params." });
+  }
+  const latSpan = neLat - swLat;
+  const lonSpan = neLon - swLon;
+  if (latSpan <= 0 || lonSpan <= 0) {
+    return res.status(400).json({ error: "Invalid bounding box — neLat/neLon must be greater than swLat/swLon." });
+  }
+  if (latSpan > MAP_PINS_MAX_SPAN_DEG || lonSpan > MAP_PINS_MAX_SPAN_DEG) {
+    return res.status(400).json({ error: `Zoom in a bit — that area is too large to search at once (max ${MAP_PINS_MAX_SPAN_DEG}° span per side).` });
+  }
+
+  // Round the bbox to ~1km precision so small pans/zooms hit the same cache
+  // entry instead of fragmenting the cache with near-duplicate keys.
+  const round = (n) => Math.round(n * 100) / 100;
+  const cacheKey = `mapPins::${round(swLat)},${round(swLon)},${round(neLat)},${round(neLon)}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ ...cached.data, cached: true });
+  }
+
+  const bbox = `${swLat},${swLon},${neLat},${neLon}`;
+  const query = `
+    [out:json][timeout:25];
+    (
+      way(${bbox})["highway"~"^(path|footway)$"]["name"];
+      relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
+      way(${bbox})["leisure"="park"]["name"];
+      way(${bbox})["boundary"="national_park"]["name"];
+      relation(${bbox})["boundary"="national_park"]["name"];
+      way(${bbox})["boundary"="protected_area"]["name"];
+      relation(${bbox})["boundary"="protected_area"]["name"];
+    );
+    out tags geom center;
+  `.trim();
+
+  try {
+    const data = await runOverpassQuery(query);
+    const elements = data.elements || [];
+
+    const trailsByName = new Map();
+    const parks = [];
+    const areas = [];
+    const seenParkNames = new Set();
+    const seenAreaNames = new Set();
+
+    for (const el of elements) {
+      const tags = el.tags || {};
+      const name = tags.name;
+      if (!name) continue;
+
+      const isTrail = tags.highway === "path" || tags.highway === "footway" || /^(hiking|foot)$/.test(tags.route || "");
+      const isPark = tags.leisure === "park";
+      const isArea = tags.boundary === "national_park" || tags.boundary === "protected_area";
+
+      if (isTrail) {
+        let segs = [];
+        if (el.type === "relation" && Array.isArray(el.members)) {
+          el.members.forEach((m) => {
+            if (m.geometry && m.geometry.length >= 2) segs.push(m.geometry.filter((p) => p));
+          });
+        } else if (el.geometry && el.geometry.length >= 2) {
+          segs.push(el.geometry.filter((p) => p));
+        }
+        if (segs.length === 0) continue;
+        const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
+        const firstPt = segs[0][0];
+        const existing = trailsByName.get(name);
+        if (existing) {
+          existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+          existing.segments += segs.length;
+        } else {
+          trailsByName.set(name, {
+            name,
+            distance_km: Math.round(lenKm * 10) / 10,
+            difficulty: difficultyFromTags(tags),
+            lat: firstPt.lat,
+            lon: firstPt.lon,
+            segments: segs.length,
+          });
+        }
+      } else if (isPark) {
+        if (seenParkNames.has(name)) continue;
+        seenParkNames.add(name);
+        const center = el.center || (el.geometry && el.geometry[0]);
+        if (!center) continue;
+        parks.push({ name, kind: "City / Local Park", lat: center.lat, lon: center.lon });
+      } else if (isArea) {
+        if (seenAreaNames.has(name)) continue;
+        seenAreaNames.add(name);
+        const center = el.center || (el.geometry && el.geometry[0]);
+        if (!center) continue;
+        areas.push({
+          name,
+          kind: tags.boundary === "national_park" ? "National Park" : "Protected Area",
+          lat: center.lat,
+          lon: center.lon,
+        });
+      }
+    }
+
+    const trails = Array.from(trailsByName.values()).slice(0, 200);
+
+    // Merge in community-submitted trails whose saved point falls inside this
+    // bounding box — a simple lat/lon range query, no geo-index needed at
+    // this scale (thousands of docs, not millions).
+    try {
+      const collection = await getCommunityTrailsCollection();
+      if (collection) {
+        const community = await collection.find({
+          lat: { $gte: swLat, $lte: neLat },
+          lon: { $gte: swLon, $lte: neLon },
+        }).limit(50).toArray();
+        community.forEach((c) => {
+          trails.push({
+            name: c.name,
+            distance_km: c.distance_km,
+            difficulty: "Unknown",
+            lat: c.lat,
+            lon: c.lon,
+            segments: c.geometry ? c.geometry.length : 0,
+            community: true,
+          });
+        });
+      }
+    } catch (communityErr) {
+      console.error("Community trails merge (map-pins) failed:", communityErr.message || communityErr);
+    }
+
+    const result = { trails, parks: parks.slice(0, 100), areas: areas.slice(0, 100) };
+    cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ ...result, cached: false });
+  } catch (err) {
+    console.error("Map-pins lookup failed:", err.message || err);
+    res.status(502).json({ error: "Overpass is busy right now — try again in a minute." });
+  }
+});
+
 // Lets a user submit a custom-created route (from Create or the trail
 // editor) to the shared, searchable database — this is what makes routes
 // like a homemade "Four Pass Loop" findable by other people via Discover,
