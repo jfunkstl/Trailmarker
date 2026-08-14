@@ -358,6 +358,59 @@ app.get("/api/trails", async (req, res) => {
       } catch (usgsErr) {
         console.error("USGS National Trails merge failed:", usgsErr.message || usgsErr);
       }
+
+      // Colorado Trail Explorer (COTREX) — a Colorado Parks & Wildlife layer
+      // aggregating ~40,000 miles of trails from 230+ local land managers
+      // (USFS, BLM, county, and city sources) into one statewide dataset.
+      // Colorado-only and name-filtered for the same reasons as NPS/USGS
+      // above: no clean way to scan it for an entire state cheaply, and it
+      // would crowd out other states' results if run unconditionally.
+      // Endpoint verified live and queryable before writing this (96,029
+      // trail records; see project notes on the earlier USGS EPQS mistake
+      // — this one wasn't guessed at).
+      if (iso === "US-CO") {
+        try {
+          const cotrexWhere = `UPPER(name) LIKE UPPER('%${escapeRegex(q).replace(/'/g, "''")}%')`;
+          const cotrexUrl = "https://gis.colorado.gov/public/rest/services/OIT/Colorado_State_Basemap/MapServer/40/query"
+            + `?where=${encodeURIComponent(cotrexWhere)}&outFields=${encodeURIComponent("name,surface,length_mi_,manager,dogs,min_elevat,max_elevat,url")}&outSR=4326&f=geojson`;
+          const cotrexResp = await fetch(cotrexUrl, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+          if (cotrexResp.ok) {
+            const cotrexData = await cotrexResp.json();
+            (cotrexData.features || []).forEach((f) => {
+              const name = f.properties.name;
+              if (!name || byName.has(name)) return;
+              const geom = f.geometry;
+              if (!geom) return;
+              // GeoJSON LineString/MultiLineString coords are [lon,lat] — flip to [lat,lon],
+              // same as the NPS/USGS handling above.
+              const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+              const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+              if (segCoordsList.length === 0) return;
+              // Computed from the actual returned geometry rather than the
+              // layer's own length_mi_ field, to stay consistent with how
+              // every other source in this app measures distance.
+              const lenKm = segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+              const descParts = ["From Colorado's COTREX trail database."];
+              if (f.properties.manager) descParts.push(`Managed by ${f.properties.manager}.`);
+              if (f.properties.dogs) descParts.push(`Dogs: ${f.properties.dogs}.`);
+              byName.set(name, {
+                name,
+                distance_km: lenKm,
+                segments: segCoordsList.length,
+                lat: segCoordsList[0][0][0],
+                lon: segCoordsList[0][0][1],
+                tags: { surface: f.properties.surface || null, description: descParts.join(" ") },
+                segmentsGeom: segCoordsList,
+              });
+            });
+          } else {
+            console.error("COTREX trails lookup returned", cotrexResp.status);
+          }
+        } catch (cotrexErr) {
+          console.error("COTREX trails merge failed:", cotrexErr.message || cotrexErr);
+          // Not fatal — OSM/NPS/USGS results still get returned below.
+        }
+      }
     }
 
     const MAX_POINTS_PER_TRAIL = 400;
@@ -846,6 +899,203 @@ app.get("/api/reccons", async (req, res) => {
   } catch (err) {
     console.error("Rec/conservation lookup failed:", err.message || err);
     res.status(502).json({ error: "Overpass is busy right now — try again in a minute." });
+  }
+});
+
+// Combined bounding-box lookup for the map-first Discover view — returns
+// trail, park, and rec/conservation-area pins for whatever area the map is
+// currently showing. Deliberately NOT designed to be called on every
+// pan/zoom (Overpass is free, shared infrastructure and rate-limits
+// aggressively) — the frontend should call this on initial load and via a
+// "Search this area" action, same pattern most map apps use for this exact
+// reason. Takes the southwest/northeast corners directly, matching what
+// Leaflet's map.getBounds() already returns, so the frontend can pass
+// bounds straight through with no conversion.
+//
+// Park pins here come from OSM tags rather than the official NPS API,
+// since NPS's API filters by state code, not by an arbitrary rectangle —
+// tapping into a specific park still gets the authoritative NPS
+// description/alerts via the existing /api/park-info lookup.
+const MAP_PINS_MAX_SPAN_DEG = 1.5; // guards against an accidental whole-region query
+const MAP_PINS_MAX_TRAIL_POINTS = 200; // lighter than full-detail search — enough to look right on a map, not a final detail view
+
+app.get("/api/map-pins", async (req, res) => {
+  const swLat = parseFloat(req.query.swLat);
+  const swLon = parseFloat(req.query.swLon);
+  const neLat = parseFloat(req.query.neLat);
+  const neLon = parseFloat(req.query.neLon);
+
+  if ([swLat, swLon, neLat, neLon].some((v) => Number.isNaN(v))) {
+    return res.status(400).json({ error: "Missing or invalid map bounds (swLat, swLon, neLat, neLon required)." });
+  }
+  if (neLat <= swLat || neLon <= swLon) {
+    return res.status(400).json({ error: "Invalid bounds — northeast corner must be north/east of the southwest corner." });
+  }
+  if (neLat - swLat > MAP_PINS_MAX_SPAN_DEG || neLon - swLon > MAP_PINS_MAX_SPAN_DEG) {
+    return res.status(400).json({ error: "Zoom in a bit more to load trails and parks for this area." });
+  }
+
+  // Round to keep the cache useful for small map nudges without meaningfully
+  // changing what's actually shown (~0.005° buckets).
+  const round = (n) => Math.round(n * 200) / 200;
+  const cacheKey = `mapPins::${round(swLat)},${round(swLon)},${round(neLat)},${round(neLon)}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ ...cached.data, cached: true });
+  }
+
+  const bbox = `${swLat},${swLon},${neLat},${neLon}`;
+
+  // Geo-filter placed immediately after the element type, before tag
+  // brackets — matching the exact ordering used by the proven-working
+  // trail queries above (around:/area.a), rather than the reverse order
+  // this endpoint originally shipped with. That reversed ordering is the
+  // suspected cause of an empty trails result during live testing:
+  // the exact-match park/area queries tolerated it, but the regex-based
+  // highway filter didn't return results with the filter trailing the
+  // bbox. Reordering here to match the known-good pattern rather than
+  // guessing at a different fix.
+  const trailsQuery = `
+    [out:json][timeout:25];
+    (
+      way(${bbox})["highway"~"^(path|footway)$"]["name"];
+      relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
+    );
+    out tags geom;
+  `.trim();
+
+  const parksQuery = `
+    [out:json][timeout:25];
+    (
+      way(${bbox})["leisure"="park"]["name"];
+      way(${bbox})["boundary"="national_park"]["name"];
+      relation(${bbox})["boundary"="national_park"]["name"];
+      way(${bbox})["boundary"="protected_area"]["name"];
+      relation(${bbox})["boundary"="protected_area"]["name"];
+    );
+    out tags center;
+  `.trim();
+
+  const areasQuery = `
+    [out:json][timeout:25];
+    (
+      way(${bbox})["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"];
+      relation(${bbox})["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]["name"];
+    );
+    out tags center;
+  `.trim();
+
+  try {
+    const [trailsData, parksData, areasData] = await Promise.all([
+      runOverpassQuery(trailsQuery).catch((err) => { console.error("Map pins: trails query failed:", err.message || err); return { elements: [] }; }),
+      runOverpassQuery(parksQuery).catch((err) => { console.error("Map pins: parks query failed:", err.message || err); return { elements: [] }; }),
+      runOverpassQuery(areasQuery).catch((err) => { console.error("Map pins: areas query failed:", err.message || err); return { elements: [] }; }),
+    ]);
+
+    // ---- trails ----
+    const byName = new Map();
+    (trailsData.elements || []).forEach((el) => {
+      if (!el.tags?.name) return;
+      const name = el.tags.name;
+      let segs = [];
+      if (el.type === "relation" && Array.isArray(el.members)) {
+        el.members.forEach((m) => {
+          if (m.geometry && m.geometry.length >= 2) segs.push(m.geometry.filter((p) => p));
+        });
+      } else if (el.geometry && el.geometry.length >= 2) {
+        segs.push(el.geometry.filter((p) => p));
+      }
+      if (segs.length === 0) return; // super-relations skipped here — map pins favor speed over completeness
+      const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
+      const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segs.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, { name, distance_km: lenKm, segments: segs.length, lat: segs[0][0].lat, lon: segs[0][0].lon, tags: el.tags, segmentsGeom: segCoordsList });
+      }
+    });
+
+    const trails = Array.from(byName.values())
+      .filter((t) => t.distance_km > 0.1)
+      .map((t) => {
+        const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
+        const perSegBudget = Math.max(2, Math.floor(MAP_PINS_MAX_TRAIL_POINTS / t.segmentsGeom.length));
+        const geometry = totalPoints <= MAP_PINS_MAX_TRAIL_POINTS ? t.segmentsGeom : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
+        return {
+          name: t.name,
+          distance_km: Math.round(t.distance_km * 10) / 10,
+          difficulty: difficultyFromTags(t.tags),
+          surface: t.tags.surface || null,
+          segments: t.segments,
+          lat: t.lat,
+          lon: t.lon,
+          geometry,
+        };
+      })
+      .sort((a, b) => b.distance_km - a.distance_km)
+      .slice(0, 100);
+
+    // ---- parks ----
+    const parksSeen = new Map();
+    (parksData.elements || []).forEach((el) => {
+      const name = el.tags && el.tags.name;
+      const center = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
+      if (!name || !center || parksSeen.has(name)) return;
+      parksSeen.set(name, { name, kind: parkKind(el.tags || {}), lat: center.lat, lon: center.lon });
+    });
+    const parks = Array.from(parksSeen.values()).slice(0, 50);
+
+    // ---- rec/conservation areas ----
+    const areasSeen = new Map();
+    (areasData.elements || []).forEach((el) => {
+      const name = el.tags && el.tags.name;
+      const center = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
+      if (!name || !center || areasSeen.has(name)) return;
+      const operator = el.tags.operator || "";
+      areasSeen.set(name, {
+        name,
+        kind: /forest service/i.test(operator) ? "National Forest" : /bureau of land management/i.test(operator) ? "BLM Land" : "Conservation Area",
+        lat: center.lat,
+        lon: center.lon,
+      });
+    });
+    const areas = Array.from(areasSeen.values()).slice(0, 50);
+
+    // ---- community trails within bounds ----
+    try {
+      const collection = await getCommunityTrailsCollection();
+      if (collection) {
+        const community = await collection.find({
+          lat: { $gte: swLat, $lte: neLat },
+          lon: { $gte: swLon, $lte: neLon },
+        }).limit(50).toArray();
+        community.forEach((c) => {
+          trails.push({
+            name: c.name,
+            distance_km: c.distance_km,
+            difficulty: "Unknown",
+            surface: null,
+            segments: c.geometry.length,
+            lat: c.lat,
+            lon: c.lon,
+            geometry: c.geometry,
+            community: true,
+          });
+        });
+      }
+    } catch (communityErr) {
+      console.error("Map pins: community trails merge failed:", communityErr.message || communityErr);
+    }
+
+    const responseData = { trails, parks, areas };
+    cache.set(cacheKey, { data: responseData, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ ...responseData, cached: false });
+  } catch (err) {
+    console.error("Map pins lookup failed:", err.message || err);
+    res.status(502).json({ error: "Couldn't load trails and parks for this area right now — try again in a minute." });
   }
 });
 
