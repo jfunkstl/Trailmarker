@@ -1037,18 +1037,26 @@ app.get("/api/map-pins", async (req, res) => {
   }
 
   const bbox = `${swLat},${swLon},${neLat},${neLon}`;
+  // Two separate query blocks, each with its own `out` statement. Overpass
+  // QL only allows ONE geometry-modifier per `out` (geom OR center, never
+  // both) — combining them into a single "out tags geom center;" silently
+  // drops one, which is what caused trails to come back empty. Trails need
+  // full path geometry to draw; parks/areas only need a point.
   const query = `
     [out:json][timeout:25];
     (
       way(${bbox})["highway"~"^(path|footway)$"]["name"];
       relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
+    );
+    out tags geom;
+    (
       way(${bbox})["leisure"="park"]["name"];
       way(${bbox})["boundary"="national_park"]["name"];
       relation(${bbox})["boundary"="national_park"]["name"];
       way(${bbox})["boundary"="protected_area"]["name"];
       relation(${bbox})["boundary"="protected_area"]["name"];
     );
-    out tags geom center;
+    out tags center;
   `.trim();
 
   try {
@@ -1116,6 +1124,20 @@ app.get("/api/map-pins", async (req, res) => {
       }
     }
 
+    // Large administrative boundary relations (e.g. a BLM field office
+    // covering several counties) can report a centroid far outside the
+    // searched viewport even when some sliver of the boundary technically
+    // intersects it. A generous buffer keeps genuine edge cases (a park
+    // that's mostly outside the box) while dropping pins that would show up
+    // absurdly far from where the user is actually looking at the map.
+    const PIN_BOUNDS_BUFFER_DEG = 0.5;
+    const withinBufferedBounds = (lat, lon) =>
+      lat >= swLat - PIN_BOUNDS_BUFFER_DEG && lat <= neLat + PIN_BOUNDS_BUFFER_DEG &&
+      lon >= swLon - PIN_BOUNDS_BUFFER_DEG && lon <= neLon + PIN_BOUNDS_BUFFER_DEG;
+
+    const filteredParks = parks.filter((p) => withinBufferedBounds(p.lat, p.lon));
+    const filteredAreas = areas.filter((a) => withinBufferedBounds(a.lat, a.lon));
+
     const trails = Array.from(trailsByName.values()).slice(0, 200);
 
     // Merge in community-submitted trails whose saved point falls inside this
@@ -1144,7 +1166,7 @@ app.get("/api/map-pins", async (req, res) => {
       console.error("Community trails merge (map-pins) failed:", communityErr.message || communityErr);
     }
 
-    const result = { trails, parks: parks.slice(0, 100), areas: areas.slice(0, 100) };
+    const result = { trails, parks: filteredParks.slice(0, 100), areas: filteredAreas.slice(0, 100) };
     cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
     res.json({ ...result, cached: false });
   } catch (err) {
