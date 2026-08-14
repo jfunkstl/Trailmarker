@@ -1770,6 +1770,72 @@ async function loadElevationChart(trail) {
       geometry: trail.geometry,
       lat: trail.lat,
       lon: trail.lon,
+async function loadElevationChart(trail) {
+  const note = document.getElementById("elevationNote");
+  try {
+    // Build a continuous point list + cumulative distance, but SKIP the
+    // artificial jump between the end of one segment and the start of the
+    // next. Those gaps are not part of the walked route (they come from
+    // stitching trails with "+", eraser gaps, or multi-piece imports).
+    const allPoints = [];
+    const cum = [];
+    let runningKm = 0;
+
+    (trail.geometry || []).forEach((seg) => {
+      if (!seg || seg.length < 2) return;
+      for (let i = 0; i < seg.length; i++) {
+        if (allPoints.length === 0) {
+          allPoints.push(seg[i]);
+          cum.push(0);
+        } else if (i === 0) {
+          // First point of a new segment → do NOT add the inter-segment gap
+          allPoints.push(seg[i]);
+          cum.push(runningKm);
+        } else {
+          const prev = allPoints[allPoints.length - 1];
+          const d = haversineKm(prev[0], prev[1], seg[i][0], seg[i][1]);
+          runningKm += d;
+          allPoints.push(seg[i]);
+          cum.push(runningKm);
+        }
+      }
+    });
+
+    if (allPoints.length < 2) throw new Error("not enough points");
+
+    const totalKm = runningKm;
+    const SAMPLES = 20;
+    const sampled = [];
+    for (let i = 0; i < SAMPLES; i++) {
+      const targetDist = (i / (SAMPLES - 1)) * totalKm;
+      let idx = cum.findIndex((d) => d >= targetDist);
+      if (idx === -1) idx = allPoints.length - 1;
+      sampled.push({ point: allPoints[idx], mi: cum[idx] * 0.621371 });
+    }
+
+    const locString = sampled.map((s) => `\( {s.point[0]}, \){s.point[1]}`).join("|");
+    const resp = await fetch(`/api/elevation?locations=${encodeURIComponent(locString)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "elevation API error");
+    const elevations = data.elevations;
+
+    const known = elevations.filter((e) => e !== null && e !== undefined);
+    if (known.length < 2) throw new Error("not enough elevation data returned");
+
+    let gainFt = 0;
+    for (let i = 1; i < elevations.length; i++) {
+      if (elevations[i] != null && elevations[i - 1] != null && elevations[i] > elevations[i - 1]) {
+        gainFt += elevations[i] - elevations[i - 1];
+      }
+    }
+
+    lastElevationData = {
+      sampled,
+      elevations,
+      trailName: trail.name,
+      geometry: trail.geometry,
+      lat: trail.lat,
+      lon: trail.lon,
     };
     if (elevationChartInstance) elevationChartInstance.destroy();
     buildElevationChart(
@@ -1789,7 +1855,7 @@ async function loadElevationChart(trail) {
     console.error(err);
     note.textContent = `Elevation data isn't available for this trail right now. (${err.message || err})`;
   }
-  }
+}
 
 async function runSearch() {
   const state = document.getElementById("state").value;
