@@ -524,6 +524,253 @@ function openAddSavedTrailPicker(onPick, container = modalPanel) {
           <span class="text-xs opacity-60 block">${escapeHtml(w.location || "")}</span>
         </button>
       `).join("")}
+// ================= SHARED TRAIL-EDITING ENGINE =================
+// Pencil, eraser, undo, clear, add-saved-trail, plus draggable green Start
+// and blue End markers that snap to segment endpoints.
+
+function makeEditor(map) {
+  return {
+    map,
+    segments: [],
+    mode: "pencil",
+    polylineLayer: null,
+    markerGroup: L.layerGroup().addTo(map),
+    endpointGroup: L.layerGroup().addTo(map),
+    startMarker: null,
+    endMarker: null,
+    freshSegment: true,
+  };
+}
+
+function pointDistKm(a, b) {
+  return haversineKm(a[0], a[1], b[0], b[1]);
+}
+
+function collectEndpoints(segments) {
+  const pts = [];
+  segments.forEach((seg) => {
+    if (seg.length >= 2) {
+      pts.push(seg[0]);
+      pts.push(seg[seg.length - 1]);
+    }
+  });
+  return pts;
+}
+
+function nearestEndpoint(segments, latlng, maxMeters = 45) {
+  const endpoints = collectEndpoints(segments);
+  if (endpoints.length === 0) return null;
+  let best = null;
+  let bestDist = Infinity;
+  endpoints.forEach((p) => {
+    const d = haversineKm(latlng.lat, latlng.lng, p[0], p[1]) * 1000;
+    if (d < bestDist && d <= maxMeters) {
+      bestDist = d;
+      best = p;
+    }
+  });
+  return best;
+}
+
+function snapLatLng(editor, latlng) {
+  const snapped = nearestEndpoint(editor.segments, latlng, 45);
+  if (snapped) return L.latLng(snapped[0], snapped[1]);
+  return latlng;
+}
+
+function editorRedraw(editor) {
+  if (!editor.polylineLayer) {
+    editor.polylineLayer = L.polyline(editor.segments, { color: "#1B4332", weight: 5 }).addTo(editor.map);
+  } else {
+    editor.polylineLayer.setLatLngs(editor.segments);
+  }
+
+  editor.markerGroup.clearLayers();
+  editor.segments.forEach((seg) => {
+    seg.forEach((p, i) => {
+      const isEndpoint = i === 0 || i === seg.length - 1;
+      L.circleMarker(p, {
+        radius: isEndpoint ? 6 : 4,
+        color: "#ffffff",
+        weight: 2,
+        fillColor: "#1B4332",
+        fillOpacity: 1,
+      }).addTo(editor.markerGroup);
+    });
+  });
+
+  editorUpdateEndpoints(editor);
+}
+
+function editorUpdateEndpoints(editor) {
+  if (editor.startMarker) {
+    editor.map.removeLayer(editor.startMarker);
+    editor.startMarker = null;
+  }
+  if (editor.endMarker) {
+    editor.map.removeLayer(editor.endMarker);
+    editor.endMarker = null;
+  }
+  editor.endpointGroup.clearLayers();
+
+  const allPts = editor.segments.flat();
+  if (allPts.length < 2) return;
+
+  const startPt = editor.segments[0][0];
+  const lastSeg = editor.segments[editor.segments.length - 1];
+  const endPt = lastSeg[lastSeg.length - 1];
+
+  const startIcon = L.divIcon({
+    className: "",
+    html: `<div style="background:#16a34a;color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);">S</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+  const endIcon = L.divIcon({
+    className: "",
+    html: `<div style="background:#2563eb;color:white;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.4);">E</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+  });
+
+  editor.startMarker = L.marker(startPt, {
+    icon: startIcon,
+    draggable: true,
+    zIndexOffset: 1000,
+  }).addTo(editor.endpointGroup);
+
+  editor.endMarker = L.marker(endPt, {
+    icon: endIcon,
+    draggable: true,
+    zIndexOffset: 1000,
+  }).addTo(editor.endpointGroup);
+
+  const snapOnDrag = (marker) => {
+    marker.on("drag", (e) => {
+      const snapped = nearestEndpoint(editor.segments, e.target.getLatLng(), 50);
+      if (snapped) e.target.setLatLng(snapped);
+    });
+    marker.on("dragend", (e) => {
+      const snapped = nearestEndpoint(editor.segments, e.target.getLatLng(), 60);
+      if (snapped) e.target.setLatLng(snapped);
+    });
+  };
+  snapOnDrag(editor.startMarker);
+  snapOnDrag(editor.endMarker);
+}
+
+function editorClick(editor, latlng) {
+  const snapped = snapLatLng(editor, latlng);
+  const point = [snapped.lat, snapped.lng];
+
+  if (editor.mode === "pencil") {
+    if (editor.segments.length === 0 || editor.freshSegment) {
+      editor.segments.push([]);
+      editor.freshSegment = false;
+    }
+    editor.segments[editor.segments.length - 1].push(point);
+    editorRedraw(editor);
+  } else if (editor.mode === "eraser") {
+    editorEraseNear(editor, latlng);
+  }
+}
+
+function editorEraseNear(editor, latlng) {
+  const tapPoint = editor.map.latLngToContainerPoint(latlng);
+  const RADIUS_PX = 24;
+  const isNear = (p) => {
+    const pt = editor.map.latLngToContainerPoint(p);
+    return Math.hypot(pt.x - tapPoint.x, pt.y - tapPoint.y) <= RADIUS_PX;
+  };
+  const newSegments = [];
+  editor.segments.forEach((seg) => {
+    let current = [];
+    seg.forEach((p) => {
+      if (isNear(p)) {
+        if (current.length >= 2) newSegments.push(current);
+        current = [];
+      } else {
+        current.push(p);
+      }
+    });
+    if (current.length >= 2) newSegments.push(current);
+  });
+  editor.segments = newSegments;
+  editorRedraw(editor);
+}
+
+function editorUndo(editor) {
+  if (editor.segments.length === 0) return;
+  const last = editor.segments[editor.segments.length - 1];
+  last.pop();
+  if (last.length === 0) editor.segments.pop();
+  editorRedraw(editor);
+}
+
+function editorClear(editor) {
+  editor.segments = [];
+  editor.freshSegment = true;
+  if (editor.startMarker) {
+    editor.map.removeLayer(editor.startMarker);
+    editor.startMarker = null;
+  }
+  if (editor.endMarker) {
+    editor.map.removeLayer(editor.endMarker);
+    editor.endMarker = null;
+  }
+  editorRedraw(editor);
+}
+
+function editorAddSegments(editor, geometry) {
+  if (!geometry) return;
+  geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
+  editor.freshSegment = true;
+  editorRedraw(editor);
+  const allPts = editor.segments.flat();
+  if (allPts.length) {
+    setTimeout(() => {
+      editor.map.invalidateSize();
+      editor.map.fitBounds(allPts, { padding: [20, 20] });
+    }, 30);
+  }
+}
+
+function editorDistanceKm(editor) {
+  let km = 0;
+  editor.segments.forEach((seg) => {
+    for (let i = 1; i < seg.length; i++) {
+      km += haversineKm(seg[i - 1][0], seg[i - 1][1], seg[i][0], seg[i][1]);
+    }
+  });
+  return km;
+}
+
+function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
+  editor.mode = mode;
+  if (mode === "pencil") editor.freshSegment = true;
+  pencilBtn.classList.toggle("bg-pine", mode === "pencil");
+  pencilBtn.classList.toggle("text-white", mode === "pencil");
+  eraserBtn.classList.toggle("bg-pine", mode === "eraser");
+  eraserBtn.classList.toggle("text-white", mode === "eraser");
+}
+
+function openAddSavedTrailPicker(onPick, container = modalPanel) {
+  const savedWithGeometry = wishlist.filter((w) => w.geometry);
+  if (savedWithGeometry.length === 0) {
+    showToast("No saved trails with map data yet");
+    return;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "absolute inset-0 bg-paper z-[1200] p-4 overflow-y-auto rounded-3xl";
+  overlay.innerHTML = `
+    <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-2">Add a saved trail</p>
+    <div class="flex flex-col gap-2">
+      ${savedWithGeometry.map((w, i) => `
+        <button data-pick-idx="${i}" class="text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition">
+          <span class="font-condensed font-semibold">${escapeHtml(w.name)}</span>
+          <span class="text-xs opacity-60 block">${escapeHtml(w.location || "")}</span>
+        </button>
+      `).join("")}
     </div>
     <button id="pickCancelBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition mt-3 w-full">Cancel</button>
   `;
@@ -535,9 +782,7 @@ function openAddSavedTrailPicker(onPick, container = modalPanel) {
       overlay.remove();
     });
   });
-}
-
-// ================= CREATE =================
+    }
 let createMap = null;
 let createEditor = null;
 
