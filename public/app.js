@@ -68,6 +68,98 @@ function downloadTrailForOffline(trail, buttonEl) {
   navigator.serviceWorker.controller.postMessage({ type: "PREFETCH_TILES", urls });
 }
 
+// ---------- API INTEGRATION UTILITIES ----------
+
+/**
+ * 1. Overpass API (OpenStreetMap)
+ * Fetches hiking trails directly from OSM near a given bounding box.
+ */
+async function fetchOverpassTrailData(south, west, north, east) {
+  const query = `
+    [out:json][timeout:25];
+    (
+      way["highway"~"path|footway|bridleway"]["sac_scale"](${south},${west},${north},${east});
+      relation["route"="hiking"](${south},${west},${north},${east});
+    );
+    out body;
+    >;
+    out skel qt;
+  `;
+  const url = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Overpass API request failed");
+    return await res.json();
+  } catch (err) {
+    console.error("Overpass API Error:", err);
+    return null;
+  }
+}
+
+/**
+ * 2. USGS Elevation API
+ * Retrieves elevation values for points via USGS Point Query API.
+ */
+async function fetchUsgsElevation(lat, lon) {
+  const url = `https://epqs.nationalmap.gov/v1/json?x=${lon}&y=${lat}&wkid=4326&units=Feet`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    return data?.value ? parseFloat(data.value) : null;
+  } catch (err) {
+    console.error("USGS Elevation API Error:", err);
+    return null;
+  }
+}
+
+/**
+ * 3. RIDB (Recreation.gov API)
+ * Fetches campsite and trailhead facility details. Requires an API key.
+ */
+async function fetchRidbFacilities(query, apiKey) {
+  if (!apiKey) return null;
+  const url = `https://ridb.recreation.gov/api/v1/facilities?query=${encodeURIComponent(query)}&limit=10`;
+  try {
+    const res = await fetch(url, { headers: { apiKey } });
+    if (!res.ok) throw new Error("RIDB API request failed");
+    return await res.json();
+  } catch (err) {
+    console.error("RIDB API Error:", err);
+    return null;
+  }
+}
+
+/**
+ * 4. Mapbox Directions API
+ * Snaps trail markers along walking routes using Mapbox network routing.
+ */
+async function fetchMapboxSnappedRoute(coordinates, accessToken) {
+  if (!accessToken || coordinates.length < 2) return null;
+  const coordString = coordinates.map((c) => `${c[1]},${c[0]}`).join(";");
+  const url = `https://api.mapbox.com/directions/v5/mapbox/walking/${coordString}?geometries=geojson&access_token=${accessToken}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("Mapbox Directions API request failed");
+    return await res.json();
+  } catch (err) {
+    console.error("Mapbox API Error:", err);
+    return null;
+  }
+}
+
+/**
+ * 5. Thunderforest / OpenCycleMap Topo Tiles
+ * Adds topographic trail layers to standard Leaflet maps.
+ */
+function addOutdoorTopoTileLayer(map, apiKey) {
+  if (!apiKey) return;
+  const tileUrl = `https://{s}.tile.thunderforest.com/outdoors/{z}/{x}/{y}.png?apikey=${apiKey}`;
+  L.tileLayer(tileUrl, {
+    maxZoom: 18,
+    attribution: 'Map data &copy; <a href="https://www.openstreetmap.org/">OSM</a>, Tiles &copy; <a href="https://www.thunderforest.com/">Thunderforest</a>',
+  }).addTo(map);
+}
+
 // ---------- storage ----------
 const HIKES_KEY = "trailmark-hikes";
 const WISHLIST_KEY = "trailmark-wishlist";
@@ -490,6 +582,20 @@ const endIcon = L.divIcon({
   iconAnchor: [12, 12],
 });
 
+// Option A: Split / Half-and-Half Custom SVG Icon for overlapping start/end points
+const startEndSplitIcon = L.divIcon({
+  html: `
+    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.4));">
+      <circle cx="14" cy="14" r="12" fill="white" stroke="#1B4332" stroke-width="2"/>
+      <path d="M 14 2 A 12 12 0 0 0 14 26 Z" fill="#22C55E"/>
+      <path d="M 14 2 A 12 12 0 0 1 14 26 Z" fill="#3B82F6"/>
+    </svg>
+  `,
+  className: "waypoint-marker-split",
+  iconSize: [28, 28],
+  iconAnchor: [14, 14],
+});
+
 function makeEditor(map) {
   return {
     map,
@@ -626,32 +732,53 @@ function editorUpdateWaypoints(editor) {
   const startPt = flatPoints[0];
   const endPt = flatPoints[flatPoints.length - 1];
 
-  const startMarker = L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup);
-  const endMarker = L.marker(endPt, { icon: endIcon, draggable: true }).addTo(editor.waypointGroup);
+  // Option A Solution: Render a single dual-color marker when startLat = endLat and startLng = endLng
+  const isOverlapping = startPt[0] === endPt[0] && startPt[1] === endPt[1];
 
-  startMarker.on("dragend", (e) => {
-    const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-    const allFlat = editor.segments.flat();
+  if (isOverlapping) {
+    const splitMarker = L.marker(startPt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup);
+    splitMarker.on("dragend", (e) => {
+      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
+      const allFlat = editor.segments.flat();
 
-    if (snap) {
-      const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
-      if (snapIdx !== -1) editor.startCutIndex = snapIdx;
-    }
+      if (snap) {
+        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
+        if (snapIdx !== -1) {
+          editor.startCutIndex = snapIdx;
+          editor.endCutIndex = snapIdx;
+        }
+      }
 
-    editorRedraw(editor);
-  });
+      editorRedraw(editor);
+    });
+  } else {
+    const startMarker = L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup);
+    const endMarker = L.marker(endPt, { icon: endIcon, draggable: true }).addTo(editor.waypointGroup);
 
-  endMarker.on("dragend", (e) => {
-    const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-    const allFlat = editor.segments.flat();
+    startMarker.on("dragend", (e) => {
+      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
+      const allFlat = editor.segments.flat();
 
-    if (snap) {
-      const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
-      if (snapIdx !== -1) editor.endCutIndex = snapIdx;
-    }
+      if (snap) {
+        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
+        if (snapIdx !== -1) editor.startCutIndex = snapIdx;
+      }
 
-    editorRedraw(editor);
-  });
+      editorRedraw(editor);
+    });
+
+    endMarker.on("dragend", (e) => {
+      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
+      const allFlat = editor.segments.flat();
+
+      if (snap) {
+        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
+        if (snapIdx !== -1) editor.endCutIndex = snapIdx;
+      }
+
+      editorRedraw(editor);
+    });
+  }
 }
 
 function getActiveTrimmedPolyline(editor) {
