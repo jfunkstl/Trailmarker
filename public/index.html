@@ -1,6 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- TRAILSEEKER BUILD MARKER: 2026-08-14-mappins-01 -->
+  <!--
+    Diagnostic banner + build marker. Deliberately the very first script in
+    the document so it registers error listeners before ANY other script
+    (Tailwind CDN, Leaflet, Chart.js, app.js) can fail. If app.js has a
+    syntax error, the browser can't run a single line of it -- including
+    any try/catch inside app.js itself -- so the only way to ever see that
+    failure is a listener that was already attached before app.js loaded.
+    This is that listener. It has zero dependency on Tailwind or any other
+    script: all styling here is plain inline CSS.
+  -->
+  <script>
+    console.log("TRAILSEEKER BUILD MARKER: 2026-08-14-mappins-01");
+    (function () {
+      var shown = false;
+      function showBanner(message) {
+        var render = function () {
+          if (!shown) {
+            shown = true;
+            var banner = document.createElement("div");
+            banner.id = "ts-error-banner";
+            banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
+              "background:#b91c1c;color:#fff;font-family:monospace;font-size:12px;" +
+              "padding:8px 10px;max-height:40vh;overflow-y:auto;white-space:pre-wrap;" +
+              "word-break:break-word;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+            banner.textContent = "TRAILSEEKER ERROR: " + message;
+            document.body.appendChild(banner);
+          } else {
+            var existing = document.getElementById("ts-error-banner");
+            if (existing) {
+              var line = document.createElement("div");
+              line.style.cssText = "border-top:1px solid rgba(255,255,255,0.3);margin-top:4px;padding-top:4px;";
+              line.textContent = message;
+              existing.appendChild(line);
+            }
+          }
+        };
+        if (document.body) render();
+        else document.addEventListener("DOMContentLoaded", render);
+      }
+      window.addEventListener("error", function (e) {
+        var msg = e.message || "Unknown script error";
+        if (e.filename) msg += " (" + e.filename + ":" + e.lineno + ":" + e.colno + ")";
+        showBanner(msg);
+      });
+      window.addEventListener("unhandledrejection", function (e) {
+        var reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+        showBanner("Unhandled promise rejection: " + reason);
+      });
+    })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Trailseeker</title>
