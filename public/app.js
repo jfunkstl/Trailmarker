@@ -2194,29 +2194,100 @@ function openCompleteModal(trail) {
   });
 }
 
-// ================= EXPLORE (map-first prototype, step 1) =================
-// Deliberately minimal: a blank fullscreen Leaflet map, no pins, no floating
-// UI. This exists purely to prove the map itself renders correctly in a new
-// tab context before any data or custom layout is added on top of it.
-// Follows the exact same ensureXMap() pattern already proven to work for
-// the Track and Create tab maps above.
+// ================= EXPLORE (map-first prototype, step 2) =================
+// Step 1 proved the map itself renders. This step wires it to live data:
+// fetch /api/map-pins for the current viewport whenever the map stops
+// moving, and drop simple markers. Still deliberately minimal — no
+// clustering, no custom icons, no tap-to-detail, no floating nav yet.
 let exploreMap = null;
+let exploreMarkersLayer = null;
+let exploreFetchTimeout = null;
+let exploreFetchToken = 0; // guards against a slow older request overwriting a newer one
+const EXPLORE_MAX_SPAN_DEG = 1.2; // stay safely under the server's 1.5° cap
+
 function ensureExploreMap() {
   if (exploreMap) return exploreMap;
-  exploreMap = L.map("exploreMap", { attributionControl: false }).setView([39.5, -98.35], 4);
+  // Temporary fixed starting point (Rocky Mountain NP area — already
+  // verified via /api/map-pins to have real trail/park/area data). A later
+  // step can swap this for the user's actual location.
+  exploreMap = L.map("exploreMap", { attributionControl: false }).setView([39.4, -105.7], 11);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(exploreMap);
+  exploreMarkersLayer = L.layerGroup().addTo(exploreMap);
+  exploreMap.on("moveend", scheduleExploreFetch);
+  scheduleExploreFetch();
   return exploreMap;
+}
+
+function scheduleExploreFetch() {
+  clearTimeout(exploreFetchTimeout);
+  exploreFetchTimeout = setTimeout(fetchExplorePins, 400);
+}
+
+async function fetchExplorePins() {
+  const statusEl = document.getElementById("exploreStatus");
+  if (!exploreMap || !exploreMarkersLayer) return;
+
+  const bounds = exploreMap.getBounds();
+  const swLat = bounds.getSouth();
+  const swLon = bounds.getWest();
+  const neLat = bounds.getNorth();
+  const neLon = bounds.getEast();
+  const latSpan = neLat - swLat;
+  const lonSpan = neLon - swLon;
+
+  exploreMarkersLayer.clearLayers();
+
+  if (latSpan > EXPLORE_MAX_SPAN_DEG || lonSpan > EXPLORE_MAX_SPAN_DEG) {
+    if (statusEl) statusEl.textContent = "Zoom in to see trails, parks, and protected areas here.";
+    return;
+  }
+
+  const token = ++exploreFetchToken;
+  if (statusEl) statusEl.textContent = "Loading…";
+
+  try {
+    const params = new URLSearchParams({
+      swLat: swLat.toFixed(5), swLon: swLon.toFixed(5),
+      neLat: neLat.toFixed(5), neLon: neLon.toFixed(5),
+    });
+    const resp = await fetch(`/api/map-pins?${params.toString()}`);
+    const data = await resp.json();
+    if (token !== exploreFetchToken) return; // a newer pan/zoom has since started a fresher request
+
+    if (!resp.ok) {
+      if (statusEl) statusEl.textContent = data.error || "Couldn't load this area.";
+      return;
+    }
+
+    const trails = data.trails || [];
+    const parks = data.parks || [];
+    const areas = data.areas || [];
+
+    trails.forEach((t) => {
+      L.circleMarker([t.lat, t.lon], {
+        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#1B4332", fillOpacity: 0.9,
+      }).bindPopup(`<strong>${escapeHtml(t.name)}</strong><br>${(t.distance_km * 0.621371).toFixed(1)} mi · ${escapeHtml(t.difficulty)}`).addTo(exploreMarkersLayer);
+    });
+    parks.forEach((p) => {
+      L.circleMarker([p.lat, p.lon], {
+        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#E3B23C", fillOpacity: 0.9,
+      }).bindPopup(`<strong>${escapeHtml(p.name)}</strong><br>${escapeHtml(p.kind)}`).addTo(exploreMarkersLayer);
+    });
+    areas.forEach((a) => {
+      L.circleMarker([a.lat, a.lon], {
+        radius: 7, color: "#ffffff", weight: 1.5, fillColor: "#8a2f22", fillOpacity: 0.9,
+      }).bindPopup(`<strong>${escapeHtml(a.name)}</strong><br>${escapeHtml(a.kind)}`).addTo(exploreMarkersLayer);
+    });
+
+    if (statusEl) {
+      statusEl.textContent = `${trails.length} trail${trails.length !== 1 ? "s" : ""} · ${parks.length} park${parks.length !== 1 ? "s" : ""} · ${areas.length} area${areas.length !== 1 ? "s" : ""} in view.`;
+    }
+  } catch (err) {
+    if (token !== exploreFetchToken) return;
+    console.error("Map-pins fetch failed:", err);
+    if (statusEl) statusEl.textContent = "Couldn't reach the server.";
+  }
 }
 
 // ---------- init ----------
 window.addEventListener("beforeunload", () => {
-  clearInterval(timerId);
-  if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
-});
-
-updateStatLine();
-renderJournal();
-loadStates();
-populateTrailPicker();
-populateCreateBasePicker();
-switchTab("discover");
