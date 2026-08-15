@@ -263,13 +263,23 @@
     </section>
 
     <!-- EXPLORE (map-first prototype, step 2: live pins from /api/map-pins) -->
+    <!-- EXPLORE (map-first prototype, step 3: floating status pill over the map) -->
     <section id="tab-explore" class="hidden">
       <h2 class="font-display text-2xl mb-4">Map (prototype)</h2>
-      <div class="rounded-2xl overflow-hidden border border-line">
+      <div id="exploreMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
         <div id="exploreMap" class="w-full h-[70vh] bg-card"></div>
+        <!--
+          Floating status pill, overlaid on top of the map itself rather than
+          living in the normal page flow below it. z-[1200] matches the same
+          threshold already used elsewhere in this app for overlay UI that
+          needs to sit above Leaflet's internal panes/controls (which can
+          reach up to ~1000) -- same id as before, so app.js needs no change.
+        -->
+        <div class="absolute top-3 left-1/2 -translate-x-1/2 z-[1200] bg-card border border-line rounded-full px-4 py-2 shadow-md max-w-[90%] text-center">
+          <span class="text-sm font-condensed" id="exploreStatus">Loading…</span>
+        </div>
       </div>
-      <p class="text-sm opacity-70 mt-2" id="exploreStatus">Loading…</p>
-      <p class="text-xs opacity-60 mt-1">Temporary test view for the upcoming map-first Discover redesign. Pan and zoom to load trails, parks, and protected areas. Nothing here is final, and Discover is untouched.</p>
+      <p class="text-xs opacity-60 mt-3">Temporary test view for the upcoming map-first Discover redesign. Pan and zoom to load trails, parks, and protected areas. Nothing here is final, and Discover is untouched.</p>
     </section>
   </main>
 
