@@ -313,7 +313,7 @@ function updateStatLine() {
 }
 
 // ---------- tab switching ----------
-const tabs = ["discover", "create", "track", "journal"];
+const tabs = ["discover", "create", "track", "journal", "explore"];
 function switchTab(tab) {
   tabs.forEach((t) => {
     document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tab);
@@ -323,6 +323,7 @@ function switchTab(tab) {
   });
   if (tab === "track") setTimeout(() => { ensureTrackMap(); trackMap.invalidateSize(); }, 50);
   if (tab === "create") setTimeout(() => { ensureCreateMap(); createMap.invalidateSize(); }, 50);
+  if (tab === "explore") setTimeout(() => { ensureExploreMap(); exploreMap.invalidateSize(); }, 50);
 }
 document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -2191,6 +2192,20 @@ function openCompleteModal(trail) {
     updateStatLine();
     switchTab("journal");
   });
+}
+
+// ================= EXPLORE (map-first prototype, step 1) =================
+// Deliberately minimal: a blank fullscreen Leaflet map, no pins, no floating
+// UI. This exists purely to prove the map itself renders correctly in a new
+// tab context before any data or custom layout is added on top of it.
+// Follows the exact same ensureXMap() pattern already proven to work for
+// the Track and Create tab maps above.
+let exploreMap = null;
+function ensureExploreMap() {
+  if (exploreMap) return exploreMap;
+  exploreMap = L.map("exploreMap", { attributionControl: false }).setView([39.5, -98.35], 4);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(exploreMap);
+  return exploreMap;
 }
 
 // ---------- init ----------
