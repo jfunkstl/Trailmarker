@@ -2291,3 +2291,13 @@ async function fetchExplorePins() {
 
 // ---------- init ----------
 window.addEventListener("beforeunload", () => {
+clearInterval(timerId);
+  if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
+});
+
+updateStatLine();
+renderJournal();
+loadStates();
+populateTrailPicker();
+populateCreateBasePicker();
+switchTab("discover");
