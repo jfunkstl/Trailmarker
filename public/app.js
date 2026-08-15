@@ -2194,6 +2194,31 @@ function openCompleteModal(trail) {
   });
 }
 
+// Nicer tap-to-detail: reuses the existing openModal() card system (already
+// proven throughout Track/Create/Journal) instead of Leaflet's plain white
+// default popup, so the map prototype starts to feel consistent with the
+// rest of the app.
+function openExplorePinDetail(item, type) {
+  let bodyHtml = "";
+  if (type === "trail") {
+    bodyHtml = `
+      <div class="flex flex-wrap gap-2 my-2">
+        <span>${(item.distance_km * 0.621371).toFixed(1)} mi</span>
+        <span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(item.difficulty)}</span>
+      </div>
+      <p class="text-xs opacity-60">${item.segments} mapped segment${item.segments !== 1 ? "s" : ""}</p>
+    `;
+  } else {
+    // parks and protected areas share the same simple shape: just a kind chip
+    bodyHtml = `
+      <div class="flex flex-wrap gap-2 my-2">
+        <span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(item.kind)}</span>
+      </div>
+    `;
+  }
+  openModal(item.name, bodyHtml);
+}
+
 // ================= EXPLORE (map-first prototype, step 2) =================
 // Step 1 proved the map itself renders. This step wires it to live data:
 // fetch /api/map-pins for the current viewport whenever the map stops
@@ -2266,17 +2291,17 @@ async function fetchExplorePins() {
     trails.forEach((t) => {
       L.circleMarker([t.lat, t.lon], {
         radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#1B4332", fillOpacity: 0.9,
-      }).bindPopup(`<strong>${escapeHtml(t.name)}</strong><br>${(t.distance_km * 0.621371).toFixed(1)} mi · ${escapeHtml(t.difficulty)}`).addTo(exploreMarkersLayer);
+      }).on("click", () => openExplorePinDetail(t, "trail")).addTo(exploreMarkersLayer);
     });
     parks.forEach((p) => {
       L.circleMarker([p.lat, p.lon], {
-        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#E3B23C", fillOpacity: 0.9,
-      }).bindPopup(`<strong>${escapeHtml(p.name)}</strong><br>${escapeHtml(p.kind)}`).addTo(exploreMarkersLayer);
+radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#E3B23C", fillOpacity: 0.9,
+      }).on("click", () => openExplorePinDetail(p, "park")).addTo(exploreMarkersLayer);
     });
     areas.forEach((a) => {
       L.circleMarker([a.lat, a.lon], {
         radius: 7, color: "#ffffff", weight: 1.5, fillColor: "#8a2f22", fillOpacity: 0.9,
-      }).bindPopup(`<strong>${escapeHtml(a.name)}</strong><br>${escapeHtml(a.kind)}`).addTo(exploreMarkersLayer);
+      }).on("click", () => openExplorePinDetail(a, "area")).addTo(exploreMarkersLayer);
     });
 
     if (statusEl) {
@@ -2291,7 +2316,7 @@ async function fetchExplorePins() {
 
 // ---------- init ----------
 window.addEventListener("beforeunload", () => {
-clearInterval(timerId);
+  clearInterval(timerId);
   if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
 });
 
