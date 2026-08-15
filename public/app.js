@@ -2243,6 +2243,36 @@ function ensureExploreMap() {
   return exploreMap;
 }
 
+// Floating locate/recenter button. Same geolocation pattern already proven
+// in the Track tab's startTracking() above -- getCurrentPosition with an
+// error callback, nothing new invented. Recentering the map fires the
+// existing "moveend" listener automatically, so pins refresh for the new
+// location without any extra wiring here.
+document.getElementById("exploreLocateBtn").addEventListener("click", () => {
+  const btn = document.getElementById("exploreLocateBtn");
+  if (!navigator.geolocation) {
+    showToast("This browser can't share your location.");
+    return;
+  }
+  const map = ensureExploreMap();
+  const originalIcon = btn.textContent;
+  btn.textContent = "…";
+  btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      map.setView([pos.coords.latitude, pos.coords.longitude], 14);
+      btn.textContent = originalIcon;
+      btn.disabled = false;
+    },
+    () => {
+      showToast("Couldn't get your location — check permissions and try again.");
+      btn.textContent = originalIcon;
+      btn.disabled = false;
+    },
+    { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+  );
+});
+
 function scheduleExploreFetch() {
   clearTimeout(exploreFetchTimeout);
   exploreFetchTimeout = setTimeout(fetchExplorePins, 400);
@@ -2295,7 +2325,7 @@ async function fetchExplorePins() {
     });
     parks.forEach((p) => {
       L.circleMarker([p.lat, p.lon], {
-radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#E3B23C", fillOpacity: 0.9,
+        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#E3B23C", fillOpacity: 0.9,
       }).on("click", () => openExplorePinDetail(p, "park")).addTo(exploreMarkersLayer);
     });
     areas.forEach((a) => {
@@ -2325,4 +2355,4 @@ renderJournal();
 loadStates();
 populateTrailPicker();
 populateCreateBasePicker();
-switchTab("discover");
+switchTab("discover"); 
