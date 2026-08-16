@@ -2200,12 +2200,14 @@ function openCompleteModal(trail) {
 function openExplorePinDetail(item, type) {
   let bodyHtml = "";
   if (type === "trail") {
+    const hasGeometry = Array.isArray(item.geometry) && item.geometry.some((seg) => seg && seg.length >= 2);
     bodyHtml = `
       <div class="flex flex-wrap gap-2 my-2">
         <span>${(item.distance_km * 0.621371).toFixed(1)} mi</span>
         <span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(item.difficulty)}</span>
       </div>
       <p class="text-xs opacity-60">${item.segments} mapped segment${item.segments !== 1 ? "s" : ""}</p>
+      ${hasGeometry ? `<p class="text-xs opacity-60 mt-1" id="explorePinElevation">Loading elevation…</p>` : ""}
     `;
   } else {
     // parks and protected areas share the same simple shape: just a kind chip
@@ -2216,6 +2218,40 @@ function openExplorePinDetail(item, type) {
     `;
   }
   openModal(item.name, bodyHtml);
+  if (type === "trail") loadExplorePinElevation(item);
+}
+
+// On-demand elevation gain for the tap card. The trail's geometry is
+// already small (server-side decimated to ~30 points in /api/map-pins,
+// specifically so this stays cheap even though a viewport can have up to
+// 200 trail pins) -- we only ever fetch elevation for the ONE trail the
+// person actually tapped, reusing the same /api/elevation endpoint and
+// gain-calculation approach already proven in the full Discover trail
+// detail page's loadElevationChart().
+async function loadExplorePinElevation(item) {
+  const el = document.getElementById("explorePinElevation");
+  if (!el) return; // no geometry -- row was never rendered
+  try {
+    const points = (item.geometry || []).flat().filter((p) => Array.isArray(p) && p.length >= 2);
+    if (points.length < 2) throw new Error("not enough points");
+    const locString = points.map((p) => `${p[0]},${p[1]}`).join("|");
+    const resp = await fetch(`/api/elevation?locations=${encodeURIComponent(locString)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "elevation API error");
+    const elevations = data.elevations || [];
+    const known = elevations.filter((e) => e !== null && e !== undefined);
+    if (known.length < 2) throw new Error("not enough elevation data returned");
+    let gainFt = 0;
+    for (let i = 1; i < elevations.length; i++) {
+      if (elevations[i] != null && elevations[i - 1] != null && elevations[i] > elevations[i - 1]) {
+        gainFt += elevations[i] - elevations[i - 1];
+      }
+    }
+    el.textContent = `+${Math.round(gainFt).toLocaleString()} ft elevation gain (est.)`;
+  } catch (err) {
+    console.error("Explore pin elevation lookup failed:", err);
+    el.textContent = "Elevation data unavailable";
+  }
 }
 
 // ================= EXPLORE (map-first prototype, step 2) =================
