@@ -1090,10 +1090,12 @@ app.get("/api/map-pins", async (req, res) => {
         if (segs.length === 0) continue;
         const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
         const firstPt = segs[0][0];
+        const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
         const existing = trailsByName.get(name);
         if (existing) {
           existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
           existing.segments += segs.length;
+          existing.segmentsGeom.push(...segCoordsList);
         } else {
           trailsByName.set(name, {
             name,
@@ -1102,6 +1104,7 @@ app.get("/api/map-pins", async (req, res) => {
             lat: firstPt.lat,
             lon: firstPt.lon,
             segments: segs.length,
+            segmentsGeom: segCoordsList,
           });
         }
       } else if (isPark) {
@@ -1138,7 +1141,29 @@ app.get("/api/map-pins", async (req, res) => {
     const filteredParks = parks.filter((p) => withinBufferedBounds(p.lat, p.lon));
     const filteredAreas = areas.filter((a) => withinBufferedBounds(a.lat, a.lon));
 
-    const trails = Array.from(trailsByName.values()).slice(0, 200);
+    const trails = Array.from(trailsByName.values())
+      .slice(0, 200)
+      .map((t) => {
+        // Deliberately tiny compared to /api/trails' own decimation (400pt
+        // cap) -- this endpoint can return up to 200 trails per viewport at
+        // once, so each one only needs enough points for a rough on-demand
+        // elevation-gain estimate when a pin is tapped, not a full profile.
+        const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
+        const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
+        const perSegBudget = Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL_MAPPINS / t.segmentsGeom.length));
+        const geometry = totalPoints <= MAX_POINTS_PER_TRAIL_MAPPINS
+          ? t.segmentsGeom
+          : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
+        return {
+          name: t.name,
+          distance_km: t.distance_km,
+          difficulty: t.difficulty,
+          lat: t.lat,
+          lon: t.lon,
+          segments: t.segments,
+          geometry,
+        };
+      });
 
     // Merge in community-submitted trails whose saved point falls inside this
     // bounding box — a simple lat/lon range query, no geo-index needed at
@@ -1151,13 +1176,24 @@ app.get("/api/map-pins", async (req, res) => {
           lon: { $gte: swLon, $lte: neLon },
         }).limit(50).toArray();
         community.forEach((c) => {
+          // Same lightweight decimation as OSM trails above -- community
+          // routes are user-drawn and can have far more points than needed
+          // for a rough elevation estimate.
+          const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
+          const rawGeom = Array.isArray(c.geometry) ? c.geometry : [];
+          const totalPoints = rawGeom.reduce((s, seg) => s + (seg ? seg.length : 0), 0);
+          const perSegBudget = rawGeom.length > 0 ? Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL_MAPPINS / rawGeom.length)) : 2;
+          const geometry = totalPoints <= MAX_POINTS_PER_TRAIL_MAPPINS || rawGeom.length === 0
+            ? rawGeom
+            : rawGeom.map((seg) => decimate(seg, perSegBudget));
           trails.push({
             name: c.name,
             distance_km: c.distance_km,
             difficulty: "Unknown",
             lat: c.lat,
             lon: c.lon,
-            segments: c.geometry ? c.geometry.length : 0,
+            segments: rawGeom.length,
+            geometry,
             community: true,
           });
         });
