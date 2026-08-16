@@ -2208,6 +2208,7 @@ function openExplorePinDetail(item, type) {
       </div>
       <p class="text-xs opacity-60">${item.segments} mapped segment${item.segments !== 1 ? "s" : ""}</p>
       ${hasGeometry ? `<p class="text-xs opacity-60 mt-1" id="explorePinElevation">Loading elevation…</p>` : ""}
+      <button id="explorePinFullDetailBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition mt-3">View full details</button>
     `;
   } else {
     // parks and protected areas share the same simple shape: just a kind chip
@@ -2218,7 +2219,28 @@ function openExplorePinDetail(item, type) {
     `;
   }
   openModal(item.name, bodyHtml);
-  if (type === "trail") loadExplorePinElevation(item);
+  if (type === "trail") {
+    loadExplorePinElevation(item);
+    // Reuses the existing, already-proven full trail detail overlay (full
+    // map, elevation chart, description) -- no new UI built here. The
+    // geometry passed through is the same decimated set already on the pin.
+    document.getElementById("explorePinFullDetailBtn").addEventListener("click", () => {
+      closeModal();
+      openTrailDetail({
+        name: item.name,
+        state: "",
+        distance_km: item.distance_km,
+        difficulty: item.difficulty,
+        surface: null,
+        segments: item.segments,
+        lat: item.lat,
+        lon: item.lon,
+        geometry: item.geometry || null,
+        osm_description: null,
+        osm_url: null,
+      });
+    });
+  }
 }
 
 // On-demand elevation gain for the tap card. The trail's geometry is
