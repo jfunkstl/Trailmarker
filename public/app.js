@@ -2243,6 +2243,15 @@ function ensureExploreMap() {
   return exploreMap;
 }
 
+// Floating search button. Opens the existing, already-proven Discover
+// search screen via the same switchTab() the bottom nav already uses --
+// no new UI built here, just a second entry point to it, matching the
+// AllTrails reference pattern (search reachable via both a nav button and
+// a floating icon on the map).
+document.getElementById("exploreSearchBtn").addEventListener("click", () => {
+  switchTab("discover");
+});
+
 // Floating locate/recenter button. Same geolocation pattern already proven
 // in the Track tab's startTracking() above -- getCurrentPosition with an
 // error callback, nothing new invented. Recentering the map fires the
@@ -2355,4 +2364,4 @@ renderJournal();
 loadStates();
 populateTrailPicker();
 populateCreateBasePicker();
-switchTab("discover"); 
+switchTab("discover");
