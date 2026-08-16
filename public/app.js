@@ -1137,7 +1137,6 @@ document.getElementById("addHikeBtn").addEventListener("click", () => {
     updateStatLine();
   });
 });
-
 // ================= DISCOVER =================
 let currentView = "search";
 let currentDifficulty = "All";
@@ -2250,6 +2249,13 @@ function ensureExploreMap() {
 // a floating icon on the map).
 document.getElementById("exploreSearchBtn").addEventListener("click", () => {
   switchTab("discover");
+});
+
+// Dedicated "back to map" button on the Discover search screen itself, so
+// getting back doesn't rely solely on the bottom nav -- same switchTab()
+// call the "Map" nav button already makes.
+document.getElementById("discoverBackToMapBtn").addEventListener("click", () => {
+  switchTab("explore");
 });
 
 // Floating locate/recenter button. Same geolocation pattern already proven
