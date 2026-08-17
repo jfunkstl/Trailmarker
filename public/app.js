@@ -2283,6 +2283,7 @@ async function loadExplorePinElevation(item) {
 // clustering, no custom icons, no tap-to-detail, no floating nav yet.
 let exploreMap = null;
 let exploreMarkersLayer = null;
+let exploreLastPins = { trails: [], parks: [], areas: [] }; // last successful fetch, reused by the List button so it doesn't need a second network call
 let exploreFetchTimeout = null;
 let exploreFetchToken = 0; // guards against a slow older request overwriting a newer one
 const EXPLORE_MAX_SPAN_DEG = 1.2; // stay safely under the server's 1.5° cap
@@ -2346,6 +2347,58 @@ document.getElementById("exploreLocateBtn").addEventListener("click", () => {
   );
 });
 
+// Floating "List" button -- shows whatever's currently loaded on the map
+// (the same data already fetched for the pins, no second network call) as
+// a scrollable list, matching the reference app's List view. Tapping an
+// item reuses the exact same openExplorePinDetail() the pins themselves
+// use, so there's no separate detail-rendering logic to maintain.
+function openExploreListModal() {
+  const { trails, parks, areas } = exploreLastPins;
+  const totalCount = trails.length + parks.length + areas.length;
+  if (totalCount === 0) {
+    openModal("Nothing in view", `<p class="text-sm opacity-70 py-4 text-center">Pan or zoom the map to load trails, parks, and protected areas here.</p>`);
+    return;
+  }
+  const trailRows = trails.map((t, i) => `
+    <button data-list-trail-idx="${i}" class="w-full text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition mb-2">
+      <span class="font-condensed font-semibold block">${escapeHtml(t.name)}</span>
+      <span class="text-xs opacity-60">${(t.distance_km * 0.621371).toFixed(1)} mi · ${escapeHtml(t.difficulty)}</span>
+    </button>
+  `).join("");
+  const parkRows = parks.map((p, i) => `
+    <button data-list-park-idx="${i}" class="w-full text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition mb-2">
+      <span class="font-condensed font-semibold block">${escapeHtml(p.name)}</span>
+      <span class="text-xs opacity-60">${escapeHtml(p.kind)}</span>
+    </button>
+  `).join("");
+  const areaRows = areas.map((a, i) => `
+    <button data-list-area-idx="${i}" class="w-full text-left bg-card border border-line rounded-xl px-3 py-2.5 hover:bg-chipbg transition mb-2">
+      <span class="font-condensed font-semibold block">${escapeHtml(a.name)}</span>
+      <span class="text-xs opacity-60">${escapeHtml(a.kind)}</span>
+    </button>
+  `).join("");
+  openModal(`${totalCount} in view`, `<div class="flex flex-col">${trailRows}${parkRows}${areaRows}</div>`);
+  modalBody.querySelectorAll("[data-list-trail-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeModal();
+      openExplorePinDetail(trails[Number(btn.dataset.listTrailIdx)], "trail");
+    });
+  });
+  modalBody.querySelectorAll("[data-list-park-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeModal();
+      openExplorePinDetail(parks[Number(btn.dataset.listParkIdx)], "park");
+    });
+  });
+  modalBody.querySelectorAll("[data-list-area-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeModal();
+      openExplorePinDetail(areas[Number(btn.dataset.listAreaIdx)], "area");
+    });
+  });
+}
+document.getElementById("exploreListBtn").addEventListener("click", openExploreListModal);
+
 function scheduleExploreFetch() {
   clearTimeout(exploreFetchTimeout);
   exploreFetchTimeout = setTimeout(fetchExplorePins, 400);
@@ -2367,6 +2420,7 @@ async function fetchExplorePins() {
 
   if (latSpan > EXPLORE_MAX_SPAN_DEG || lonSpan > EXPLORE_MAX_SPAN_DEG) {
     if (statusEl) statusEl.textContent = "Zoom in to see trails, parks, and protected areas here.";
+    exploreLastPins = { trails: [], parks: [], areas: [] };
     return;
   }
 
@@ -2384,12 +2438,14 @@ async function fetchExplorePins() {
 
     if (!resp.ok) {
       if (statusEl) statusEl.textContent = data.error || "Couldn't load this area.";
+      exploreLastPins = { trails: [], parks: [], areas: [] };
       return;
     }
 
     const trails = data.trails || [];
     const parks = data.parks || [];
     const areas = data.areas || [];
+    exploreLastPins = { trails, parks, areas };
 
     trails.forEach((t) => {
       L.circleMarker([t.lat, t.lon], {
@@ -2414,6 +2470,7 @@ async function fetchExplorePins() {
     if (token !== exploreFetchToken) return;
     console.error("Map-pins fetch failed:", err);
     if (statusEl) statusEl.textContent = "Couldn't reach the server.";
+    exploreLastPins = { trails: [], parks: [], areas: [] };
   }
 }
 
