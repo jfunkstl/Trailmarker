@@ -2427,5 +2427,7 @@ updateStatLine();
 renderJournal();
 loadStates();
 populateTrailPicker();
-populateCreateBasePicker();
-switchTab("discover");
+// Map is now the default landing screen (step 5 of the map-first redesign);
+// the old search UI stays fully intact, just reached via the "← Map"/🔎
+// buttons instead of being what opens first.
+switchTab("explore");
