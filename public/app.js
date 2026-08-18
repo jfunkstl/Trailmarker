@@ -2301,6 +2301,13 @@ function ensureExploreMap() {
   return exploreMap;
 }
 
+// Floating Weather button -- placeholder for now. Real forecast logic
+// (fetching and displaying the actual 3-day forecast) is the next step;
+// this just confirms the button itself is wired up correctly first.
+document.getElementById("exploreWeatherBtn").addEventListener("click", () => {
+  showToast("3-day forecast coming soon");
+});
+
 // Floating search button. Opens the existing, already-proven Discover
 // search screen via the same switchTab() the bottom nav already uses --
 // no new UI built here, just a second entry point to it, matching the
