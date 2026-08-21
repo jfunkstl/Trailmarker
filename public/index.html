@@ -285,8 +285,13 @@
         <button id="exploreWeatherBtn" class="absolute top-3 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Weather forecast">🌤</button>
         <!-- Floating locate/recenter button, top-right, directly beneath Weather (its final position). -->
         <button id="exploreLocateBtn" class="absolute top-16 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Find my location">📍</button>
-        <!-- Floating search button, bottom-left (its final position) -- opens the existing Discover search screen. Same switchTab() the bottom nav already uses, nothing new invented. Create/Track/Journal will join it here in a later step to form a full floating toolbar. -->
-        <button id="exploreSearchBtn" class="absolute bottom-4 left-4 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Search trails and parks">🔎</button>
+        <!-- Floating bottom-left toolbar: Search, Create, Track, Journal -- each button just calls the exact same switchTab() the traditional nav bar already uses. No new navigation logic here, just new buttons wired to existing functions. -->
+        <div class="absolute bottom-4 left-4 z-[1200] flex gap-2">
+          <button id="exploreSearchBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Search trails and parks">🔎</button>
+          <button id="exploreCreateBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Create a route">✏️</button>
+          <button id="exploreTrackBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Track a hike">🧭</button>
+          <button id="exploreJournalBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Journal">📓</button>
+        </div>
         <!-- Floating "List" button, bottom-right. Shows what's currently loaded on the map as a scrollable list, matching the reference app's List view. -->
         <button id="exploreListBtn" class="absolute bottom-4 right-4 z-[1200] bg-card border border-line rounded-full px-4 py-2.5 shadow-md flex items-center gap-1.5 font-condensed font-semibold uppercase text-xs tracking-wide" aria-label="Show list view">📋 List</button>
       </div>
