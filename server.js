@@ -995,6 +995,77 @@ app.get("/api/elevation", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/weather?lat=&lon=
+//
+// 3-day forecast for the Weather button on the map-first prototype. Uses
+// Open-Meteo (https://open-meteo.com) -- free, no key or signup required
+// for non-commercial use, matching every other external API this app
+// relies on. Endpoint shape and parameter names verified against the
+// official docs before writing this (never guess API params -- past USGS
+// EPQS mistake).
+// ---------------------------------------------------------------------------
+
+// WMO weather codes, as returned by Open-Meteo's `weather_code` field.
+// Table matches the official WMO code list Open-Meteo documents.
+const WMO_WEATHER_CODES = {
+  0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+  45: "Fog", 48: "Depositing rime fog",
+  51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+  56: "Light freezing drizzle", 57: "Dense freezing drizzle",
+  61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+  66: "Light freezing rain", 67: "Heavy freezing rain",
+  71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 77: "Snow grains",
+  80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+  85: "Slight snow showers", 86: "Heavy snow showers",
+  95: "Thunderstorm", 96: "Thunderstorm with slight hail", 99: "Thunderstorm with heavy hail",
+};
+function describeWeatherCode(code) {
+  return WMO_WEATHER_CODES[code] || "Unknown conditions";
+}
+
+app.get("/api/weather", async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) {
+    return res.status(400).json({ error: "Missing or invalid lat/lon." });
+  }
+
+  // Rounded to ~1km precision -- weather doesn't meaningfully vary at
+  // finer resolution than that, so small pans reuse the same cache entry.
+  const cacheKey = `weather::${lat.toFixed(2)},${lon.toFixed(2)}`;
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return res.json({ ...cached.data, cached: true });
+  }
+
+  try {
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weather_code,temperature_2m_max,temperature_2m_min&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`;
+    const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      const bodyText = await resp.text().catch(() => "");
+      throw new Error(`Open-Meteo returned ${resp.status}: ${bodyText.slice(0, 200)}`);
+    }
+    const data = await resp.json();
+    const daily = data.daily;
+    if (!daily || !Array.isArray(daily.time)) throw new Error("Unexpected response shape from Open-Meteo");
+
+    const days = daily.time.map((date, i) => ({
+      date,
+      high: Math.round(daily.temperature_2m_max[i]),
+      low: Math.round(daily.temperature_2m_min[i]),
+      description: describeWeatherCode(daily.weather_code[i]),
+    }));
+
+    const result = { days };
+    cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
+    res.json({ ...result, cached: false });
+  } catch (err) {
+    console.error("Weather lookup failed:", err.message || err);
+    res.status(502).json({ error: "Couldn't load the weather forecast right now." });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/map-pins?swLat=&swLon=&neLat=&neLon=
 //
 // Bounding-box endpoint for the map-first Discover redesign: given a Leaflet
