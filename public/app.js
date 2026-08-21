@@ -2345,6 +2345,20 @@ document.getElementById("exploreSearchBtn").addEventListener("click", () => {
   switchTab("discover");
 });
 
+// Floating Create/Track/Journal buttons -- same pattern as Search above,
+// each just calling the exact switchTab() the traditional nav bar already
+// uses. No new navigation logic anywhere in this app; these are just
+// additional entry points to screens that already work.
+document.getElementById("exploreCreateBtn").addEventListener("click", () => {
+  switchTab("create");
+});
+document.getElementById("exploreTrackBtn").addEventListener("click", () => {
+  switchTab("track");
+});
+document.getElementById("exploreJournalBtn").addEventListener("click", () => {
+  switchTab("journal");
+});
+
 // Dedicated "back to map" button on the Discover search screen itself, so
 // getting back doesn't rely solely on the bottom nav -- same switchTab()
 // call the "Map" nav button already makes.
