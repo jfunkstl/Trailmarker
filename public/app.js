@@ -2301,11 +2301,39 @@ function ensureExploreMap() {
   return exploreMap;
 }
 
-// Floating Weather button -- placeholder for now. Real forecast logic
-// (fetching and displaying the actual 3-day forecast) is the next step;
-// this just confirms the button itself is wired up correctly first.
-document.getElementById("exploreWeatherBtn").addEventListener("click", () => {
-  showToast("3-day forecast coming soon");
+// Floating Weather button -- fetches a 3-day forecast for the map's current
+// center via the new /api/weather endpoint, shown in the same openModal()
+// card system used everywhere else in the app.
+document.getElementById("exploreWeatherBtn").addEventListener("click", async () => {
+  if (!exploreMap) {
+    showToast("Open the map first");
+    return;
+  }
+  const center = exploreMap.getCenter();
+  openModal("3-Day Forecast", `<p class="text-sm opacity-70 py-4 text-center">Loading forecast…</p>`);
+  try {
+    const resp = await fetch(`/api/weather?lat=${center.lat.toFixed(4)}&lon=${center.lng.toFixed(4)}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Couldn't load forecast");
+    const days = data.days || [];
+    if (days.length === 0) throw new Error("No forecast data returned");
+    const rows = days.map((d) => {
+      // Parsed with an explicit local midnight (no "Z") so the weekday
+      // label matches the forecast day, not shifted by UTC conversion.
+      const dayLabel = new Date(`${d.date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+      return `
+        <div class="flex items-center justify-between py-2.5 border-b border-line last:border-b-0">
+          <span class="font-condensed font-semibold">${escapeHtml(dayLabel)}</span>
+          <span class="text-sm opacity-70">${escapeHtml(d.description)}</span>
+          <span class="font-condensed font-semibold text-pine">${d.high}° / ${d.low}°</span>
+        </div>
+      `;
+    }).join("");
+    modalBody.innerHTML = `<div class="flex flex-col">${rows}</div>`;
+  } catch (err) {
+    console.error("Weather forecast failed:", err);
+    modalBody.innerHTML = `<p class="text-sm opacity-70 py-4 text-center">Couldn't load the forecast right now.</p>`;
+  }
 });
 
 // Floating search button. Opens the existing, already-proven Discover
