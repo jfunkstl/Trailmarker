@@ -43,6 +43,104 @@ async function getCommunityTrailsCollection() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Persistent region cache (MongoDB) -- step 1 of moving away from live
+// Overpass queries on every map interaction. Trail/park/protected-area data
+// barely changes, so once an area has been successfully queried, there's no
+// good reason to re-query Overpass for that same area again on every future
+// visit, by anyone. This is pure plumbing for now -- nothing calls these
+// functions yet. Wiring this into /api/map-pins is the next step, once this
+// foundation is verified working in isolation.
+// ---------------------------------------------------------------------------
+
+// Fixed lat/lon grid, ~0.5deg cells (roughly 35-55km depending on latitude).
+// Chosen so a typical /api/map-pins viewport (max 1.5deg span, per
+// MAP_PINS_MAX_SPAN_DEG below) only ever needs to touch a handful of cells
+// (up to 3x3=9), not dozens.
+const CACHE_GRID_SIZE_DEG = 0.5;
+
+// Given a bounding box, returns the list of grid cell keys it overlaps.
+// Two overlapping-but-not-identical viewports will share most of their
+// cells -- that's the whole point. Exact-bbox caching (like the existing
+// 10-minute in-memory `cache` above) almost never hits twice in a row,
+// since the map's exact viewport changes continuously as someone pans.
+function gridCellsForBounds(swLat, swLon, neLat, neLon) {
+  // A tiny epsilon on the upper bounds prevents a bbox edge that lands
+  // exactly on a 0.5deg grid line from counting one extra "phantom" cell
+  // it doesn't actually have any real overlap with (Math.floor of an exact
+  // boundary value belongs to the next cell up, not the one below it).
+  const EPSILON = 1e-9;
+  const minCellLat = Math.floor(swLat / CACHE_GRID_SIZE_DEG);
+  const maxCellLat = Math.floor((neLat - EPSILON) / CACHE_GRID_SIZE_DEG);
+  const minCellLon = Math.floor(swLon / CACHE_GRID_SIZE_DEG);
+  const maxCellLon = Math.floor((neLon - EPSILON) / CACHE_GRID_SIZE_DEG);
+  const cells = [];
+  for (let latIdx = minCellLat; latIdx <= maxCellLat; latIdx++) {
+    for (let lonIdx = minCellLon; lonIdx <= maxCellLon; lonIdx++) {
+      cells.push(`${latIdx}_${lonIdx}`);
+    }
+  }
+  return cells;
+}
+
+// Inverse of the above -- given a grid cell key, returns the exact lat/lon
+// bounds it covers. Needed when we run an Overpass query scoped to exactly
+// one still-uncached cell (rather than the caller's arbitrary viewport).
+function boundsForGridCell(cellKey) {
+  const [latIdx, lonIdx] = cellKey.split("_").map(Number);
+  return {
+    swLat: latIdx * CACHE_GRID_SIZE_DEG,
+    swLon: lonIdx * CACHE_GRID_SIZE_DEG,
+    neLat: (latIdx + 1) * CACHE_GRID_SIZE_DEG,
+    neLon: (lonIdx + 1) * CACHE_GRID_SIZE_DEG,
+  };
+}
+
+async function getCachedRegionsCollection() {
+  const clientPromise = getMongoClient();
+  if (!clientPromise) return null;
+  try {
+    const client = await clientPromise;
+    return client.db("trailseeker").collection("cached_regions");
+  } catch (err) {
+    return null;
+  }
+}
+
+// Looks up a single grid cell's cached data, if any. Returns null both for
+// a genuine cache miss AND when MongoDB isn't configured/reachable --
+// callers should treat both cases identically: fall back to a live query.
+async function getCachedRegion(cellKey) {
+  const collection = await getCachedRegionsCollection();
+  if (!collection) return null;
+  try {
+    const doc = await collection.findOne({ cellKey });
+    return doc ? doc.data : null;
+  } catch (err) {
+    console.error(`Cache lookup failed for cell ${cellKey}:`, err.message || err);
+    return null;
+  }
+}
+
+// Saves a grid cell's data to the persistent cache. Upserts so re-saving
+// the same cell (e.g. a manual refresh down the line) overwrites cleanly
+// instead of creating duplicate documents.
+async function saveCachedRegion(cellKey, data) {
+  const collection = await getCachedRegionsCollection();
+  if (!collection) return false;
+  try {
+    await collection.updateOne(
+      { cellKey },
+      { $set: { cellKey, data, cachedAt: new Date() } },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.error(`Cache save failed for cell ${cellKey}:`, err.message || err);
+    return false;
+  }
+}
+
 // Simple in-memory cache so repeat searches don't hammer the public Overpass
 // endpoint (it's free, shared infrastructure and rate-limits aggressively).
 const cache = new Map();
