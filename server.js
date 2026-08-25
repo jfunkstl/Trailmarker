@@ -44,13 +44,11 @@ async function getCommunityTrailsCollection() {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent region cache (MongoDB) -- step 1 of moving away from live
-// Overpass queries on every map interaction. Trail/park/protected-area data
-// barely changes, so once an area has been successfully queried, there's no
-// good reason to re-query Overpass for that same area again on every future
-// visit, by anyone. This is pure plumbing for now -- nothing calls these
-// functions yet. Wiring this into /api/map-pins is the next step, once this
-// foundation is verified working in isolation.
+// Persistent region cache (MongoDB) -- fixed lat/lon grid so trail/park/
+// protected-area data, once queried anywhere, never needs to hit Overpass
+// again for that same area, by anyone. Step 1 (this plumbing) was verified
+// working in isolation with zero live behavior change. Step 2 wires it into
+// /api/map-pins below.
 // ---------------------------------------------------------------------------
 
 // Fixed lat/lon grid, ~0.5deg cells (roughly 35-55km depending on latitude).
@@ -62,8 +60,8 @@ const CACHE_GRID_SIZE_DEG = 0.5;
 // Given a bounding box, returns the list of grid cell keys it overlaps.
 // Two overlapping-but-not-identical viewports will share most of their
 // cells -- that's the whole point. Exact-bbox caching (like the existing
-// 10-minute in-memory `cache` above) almost never hits twice in a row,
-// since the map's exact viewport changes continuously as someone pans.
+// 10-minute in-memory cache below) almost never hits twice in a row, since
+// the map's exact viewport changes continuously as someone pans.
 function gridCellsForBounds(swLat, swLon, neLat, neLon) {
   // A tiny epsilon on the upper bounds prevents a bbox edge that lands
   // exactly on a 0.5deg grid line from counting one extra "phantom" cell
@@ -247,23 +245,19 @@ app.get("/api/trails", async (req, res) => {
   // both and merge them below.
   const RADIUS_METERS = 24000; // ~15 miles around the searched city
   const overpassQuery = centerPoint
-    ? `
-    [out:json][timeout:25];
-    (
-      way(around:${RADIUS_METERS},${centerPoint.lat},${centerPoint.lon})["highway"~"^(path|footway)$"]${nameFilter};
-      relation(around:${RADIUS_METERS},${centerPoint.lat},${centerPoint.lon})["route"~"^(hiking|foot)$"]${nameFilter};
-    );
-    out tags geom;
-  `.trim()
-    : `
-    [out:json][timeout:35];
-    area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
-    (
-      way(area.a)["highway"~"^(path|footway)$"]${nameFilter};
-      relation(area.a)["route"~"^(hiking|foot)$"]${nameFilter};
-    );
-    out tags geom;
-  `.trim();
+    ? `[out:json][timeout:25];
+(
+  way(around:${RADIUS_METERS},${centerPoint.lat},${centerPoint.lon})["highway"~"^(path|footway)$"]${nameFilter};
+  relation(around:${RADIUS_METERS},${centerPoint.lat},${centerPoint.lon})["route"~"^(hiking|foot)$"]${nameFilter};
+);
+out tags geom;`.trim()
+    : `[out:json][timeout:35];
+area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+(
+  way(area.a)["highway"~"^(path|footway)$"]${nameFilter};
+  relation(area.a)["route"~"^(hiking|foot)$"]${nameFilter};
+);
+out tags geom;`.trim();
 
   try {
     let data = null;
@@ -522,8 +516,8 @@ app.get("/api/trails", async (req, res) => {
 });
 
 // Classifies a park by whichever OSM tags matched it — national parks and
-// protected/state-level areas use `boundary`, while most city/local parks
-// use `leisure=park`.
+// protected/state-level areas use boundary, while most city/local parks
+// use leisure=park.
 function parkKind(tags) {
   if (tags.boundary === "national_park" || tags.protection_title === "National Park") return "National Park";
   if (tags.boundary === "protected_area" || tags.leisure === "nature_reserve") return "State / Protected Park";
@@ -574,13 +568,11 @@ app.get("/api/usa-trails", async (req, res) => {
   }
 
   const nameFilter = `["name"~"${escapeRegex(q)}",i]`;
-  const query = `
-    [out:json][timeout:60];
-    (
-      relation["route"~"^(hiking|foot)$"]${nameFilter};
-    );
-    out tags geom;
-  `.trim();
+  const query = `[out:json][timeout:60];
+(
+  relation["route"~"^(hiking|foot)$"]${nameFilter};
+);
+out tags geom;`.trim();
 
   try {
     const data = await runOverpassQuery(query);
@@ -803,23 +795,18 @@ app.get("/api/parks", async (req, res) => {
   // lighter and should actually return results.
   try {
     const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
-    const cityQuery = `
-      [out:json][timeout:30];
-      area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
-      way["leisure"="park"]${nameFilter}(area.a);
-      out tags center 150;
-    `.trim();
+    const cityQuery = `[out:json][timeout:30];
+area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+way["leisure"="park"]${nameFilter}(area.a);
+out tags center 150;`.trim();
     const data = await runOverpassQuery(cityQuery);
     (data.elements || []).forEach((el) => {
       const name = el.tags && el.tags.name;
       const center = el.center;
       if (!name || !center) return;
       results.push({
-        name,
-        state: stateInput,
-        kind: "City / Local Park",
-        lat: center.lat,
-        lon: center.lon,
+        name, state: stateInput, kind: "City / Local Park",
+        lat: center.lat, lon: center.lon,
         osm_description: el.tags.description || null,
         osm_url: `https://www.openstreetmap.org/?mlat=${center.lat}&mlon=${center.lon}#map=13/${center.lat}/${center.lon}`,
       });
@@ -840,6 +827,7 @@ app.get("/api/parks", async (req, res) => {
   cache.set(cacheKey, { data: parks, expires: Date.now() + CACHE_TTL_MS });
   res.json({ parks, cached: false });
 });
+
 // Requires a free API key (https://www.nps.gov/subjects/developer/get-started.htm)
 // set as the NPS_API_KEY environment variable on Render. Until that's set,
 // this just reports itself unavailable so the app falls back to Wikipedia/OSM.
@@ -908,17 +896,15 @@ app.get("/api/reccons", async (req, res) => {
   }
 
   const nameFilter = q ? `["name"~"${escapeRegex(q)}",i]` : `["name"]`;
-  const query = `
-    [out:json][timeout:30];
-    area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
-    (
-      way["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
-      relation["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
-      way["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
-      relation["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
-    );
-    out tags center 150;
-  `.trim();
+  const query = `[out:json][timeout:30];
+area["ISO3166-2"="${iso}"]["admin_level"="4"]->.a;
+(
+  way["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
+  relation["boundary"="protected_area"]["operator"~"Forest Service|Bureau of Land Management",i]${nameFilter}(area.a);
+  way["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
+  relation["boundary"="national_park"]["operator"~"Forest Service",i]${nameFilter}(area.a);
+);
+out tags center 150;`.trim();
 
   try {
     const data = await runOverpassQuery(query);
@@ -960,8 +946,7 @@ app.get("/api/usfs-trail-info", async (req, res) => {
   const safeName = name.replace(/'/g, "''").slice(0, 80);
   const where = `UPPER(trail_name) LIKE UPPER('%${safeName}%')`;
   const url = "https://apps.fs.usda.gov/ArcX/rest/services/EDW/EDW_TrailNFSPublish_01/MapServer/0/query"
-    + `?where=${encodeURIComponent(where)}&geometry=${envelope}&geometryType=esriGeometryEnvelope`
-    + `&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&f=json`;
+    + `?where=${encodeURIComponent(where)}&geometry=${envelope}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=*&f=json`;
 
   try {
     const resp = await fetch(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
@@ -1054,7 +1039,9 @@ app.get("/api/elevation", async (req, res) => {
         }
         const data = await resp.json();
         const value = data && data.value;
-        if (value === undefined || value === null || Number(value) < -100000 || Number.isNaN(Number(value))) throw new Error(`no usable value in response: ${JSON.stringify(data).slice(0, 200)}`);
+        if (value === undefined || value === null || Number(value) < -100000 || Number.isNaN(Number(value))) {
+          throw new Error(`no usable value in response: ${JSON.stringify(data).slice(0, 200)}`);
+        }
         settled.push(Number(value));
       } catch (pointErr) {
         if (settled.filter((v) => v === null).length === 0) {
@@ -1098,12 +1085,10 @@ app.get("/api/elevation", async (req, res) => {
 // 3-day forecast for the Weather button on the map-first prototype. Uses
 // Open-Meteo (https://open-meteo.com) -- free, no key or signup required
 // for non-commercial use, matching every other external API this app
-// relies on. Endpoint shape and parameter names verified against the
-// official docs before writing this (never guess API params -- past USGS
-// EPQS mistake).
+// relies on.
 // ---------------------------------------------------------------------------
 
-// WMO weather codes, as returned by Open-Meteo's `weather_code` field.
+// WMO weather codes, as returned by Open-Meteo's weather_code field.
 // Table matches the official WMO code list Open-Meteo documents.
 const WMO_WEATHER_CODES = {
   0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
@@ -1168,15 +1153,140 @@ app.get("/api/weather", async (req, res) => {
 //
 // Bounding-box endpoint for the map-first Discover redesign: given a Leaflet
 // map's current viewport (map.getBounds()), returns trails + parks + rec/
-// conservation areas that fall inside it, in one combined Overpass call.
+// conservation areas that fall inside it.
+//
+// STEP 2 of the persistent region cache: the viewport is split into fixed
+// 0.5deg grid cells. Cells that have ever been successfully queried before
+// (by anyone) are served straight from MongoDB with zero Overpass calls.
+// Only genuinely never-before-cached cells fall through to a live query,
+// which is then itself cached for next time. This means an Overpass outage
+// only affects brand-new areas -- anywhere already explored keeps working.
 //
 // IMPORTANT Overpass syntax note (this exact bug silently broke an earlier
 // version of this endpoint): the geo-filter — (bbox) or (around:...) — MUST
 // come immediately after the element type keyword, BEFORE any tag brackets.
-// way(bbox)["tag"]  -- correct
-// way["tag"](bbox)  -- WRONG, silently returns zero results, no error
+//   way(bbox)["tag"]   -- correct
+//   way["tag"](bbox)   -- WRONG, silently returns zero results, no error
 // ---------------------------------------------------------------------------
 const MAP_PINS_MAX_SPAN_DEG = 1.5;
+// Deliberately tiny compared to /api/trails' own decimation (400pt cap) --
+// this endpoint can return up to 200 trails per viewport at once, so each
+// one only needs enough points for a rough on-demand elevation-gain
+// estimate when a pin is tapped, not a full profile.
+const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
+
+// Runs one Overpass query scoped to exactly the given bounds and returns
+// the parsed { trails, parks, areas } for that area alone. Extracted out of
+// the route handler so it can be called once per still-uncached grid cell,
+// not just once per whole (arbitrary) viewport.
+async function fetchMapPinsDataForBounds(swLat, swLon, neLat, neLon) {
+  const bbox = `${swLat},${swLon},${neLat},${neLon}`;
+  // Two separate query blocks, each with its own out statement. Overpass
+  // QL only allows ONE geometry-modifier per out (geom OR center, never
+  // both) — combining them into a single "out tags geom center;" silently
+  // drops one, which is what caused trails to come back empty. Trails need
+  // full path geometry to draw; parks/areas only need a point.
+  const query = `[out:json][timeout:25];
+(
+  way(${bbox})["highway"~"^(path|footway)$"]["name"];
+  relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
+);
+out tags geom;
+(
+  way(${bbox})["leisure"="park"]["name"];
+  way(${bbox})["boundary"="national_park"]["name"];
+  relation(${bbox})["boundary"="national_park"]["name"];
+  way(${bbox})["boundary"="protected_area"]["name"];
+  relation(${bbox})["boundary"="protected_area"]["name"];
+);
+out tags center;`.trim();
+
+  const data = await runOverpassQuery(query);
+  const elements = data.elements || [];
+
+  const trailsByName = new Map();
+  const parks = [];
+  const areas = [];
+  const seenParkNames = new Set();
+  const seenAreaNames = new Set();
+
+  for (const el of elements) {
+    const tags = el.tags || {};
+    const name = tags.name;
+    if (!name) continue;
+
+    const isTrail = tags.highway === "path" || tags.highway === "footway" || /^(hiking|foot)$/.test(tags.route || "");
+    const isPark = tags.leisure === "park";
+    const isArea = tags.boundary === "national_park" || tags.boundary === "protected_area";
+
+    if (isTrail) {
+      let segs = [];
+      if (el.type === "relation" && Array.isArray(el.members)) {
+        el.members.forEach((m) => {
+          if (m.geometry && m.geometry.length >= 2) segs.push(m.geometry.filter((p) => p));
+        });
+      } else if (el.geometry && el.geometry.length >= 2) {
+        segs.push(el.geometry.filter((p) => p));
+      }
+      if (segs.length === 0) continue;
+      const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
+      const firstPt = segs[0][0];
+      const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
+      const existing = trailsByName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segs.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        trailsByName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: difficultyFromTags(tags),
+          lat: firstPt.lat,
+          lon: firstPt.lon,
+          segments: segs.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    } else if (isPark) {
+      if (seenParkNames.has(name)) continue;
+      seenParkNames.add(name);
+      const center = el.center || (el.geometry && el.geometry[0]);
+      if (!center) continue;
+      parks.push({ name, kind: "City / Local Park", lat: center.lat, lon: center.lon });
+    } else if (isArea) {
+      if (seenAreaNames.has(name)) continue;
+      seenAreaNames.add(name);
+      const center = el.center || (el.geometry && el.geometry[0]);
+      if (!center) continue;
+      areas.push({
+        name,
+        kind: tags.boundary === "national_park" ? "National Park" : "Protected Area",
+        lat: center.lat,
+        lon: center.lon,
+      });
+    }
+  }
+
+  const trails = Array.from(trailsByName.values()).map((t) => {
+    const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
+    const perSegBudget = Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL_MAPPINS / t.segmentsGeom.length));
+    const geometry = totalPoints <= MAX_POINTS_PER_TRAIL_MAPPINS
+      ? t.segmentsGeom
+      : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
+    return {
+      name: t.name,
+      distance_km: t.distance_km,
+      difficulty: t.difficulty,
+      lat: t.lat,
+      lon: t.lon,
+      segments: t.segments,
+      geometry,
+    };
+  });
+
+  return { trails, parks, areas };
+}
 
 app.get("/api/map-pins", async (req, res) => {
   const swLat = parseFloat(req.query.swLat);
@@ -1196,8 +1306,10 @@ app.get("/api/map-pins", async (req, res) => {
     return res.status(400).json({ error: `Zoom in a bit — that area is too large to search at once (max ${MAP_PINS_MAX_SPAN_DEG}° span per side).` });
   }
 
-  // Round the bbox to ~1km precision so small pans/zooms hit the same cache
-  // entry instead of fragmenting the cache with near-duplicate keys.
+  // Round the bbox to ~1km precision so small pans/zooms hit the same
+  // fast-path in-memory cache entry instead of fragmenting it with
+  // near-duplicate keys. This whole-viewport cache is checked first and is
+  // separate from (and faster than) the per-cell persistent cache below.
   const round = (n) => Math.round(n * 100) / 100;
   const cacheKey = `mapPins::${round(swLat)},${round(swLon)},${round(neLat)},${round(neLon)}`;
   const cached = cache.get(cacheKey);
@@ -1205,95 +1317,70 @@ app.get("/api/map-pins", async (req, res) => {
     return res.json({ ...cached.data, cached: true });
   }
 
-  const bbox = `${swLat},${swLon},${neLat},${neLon}`;
-  // Two separate query blocks, each with its own `out` statement. Overpass
-  // QL only allows ONE geometry-modifier per `out` (geom OR center, never
-  // both) — combining them into a single "out tags geom center;" silently
-  // drops one, which is what caused trails to come back empty. Trails need
-  // full path geometry to draw; parks/areas only need a point.
-  const query = `
-    [out:json][timeout:25];
-    (
-      way(${bbox})["highway"~"^(path|footway)$"]["name"];
-      relation(${bbox})["route"~"^(hiking|foot)$"]["name"];
-    );
-    out tags geom;
-    (
-      way(${bbox})["leisure"="park"]["name"];
-      way(${bbox})["boundary"="national_park"]["name"];
-      relation(${bbox})["boundary"="national_park"]["name"];
-      way(${bbox})["boundary"="protected_area"]["name"];
-      relation(${bbox})["boundary"="protected_area"]["name"];
-    );
-    out tags center;
-  `.trim();
-
   try {
-    const data = await runOverpassQuery(query);
-    const elements = data.elements || [];
+    // Split the requested viewport into fixed grid cells and check the
+    // persistent cache for each one independently.
+    const cellKeys = gridCellsForBounds(swLat, swLon, neLat, neLon);
+    const cellLookups = await Promise.all(
+      cellKeys.map(async (cellKey) => ({ cellKey, data: await getCachedRegion(cellKey) }))
+    );
 
+    const hitCells = cellLookups.filter((c) => c.data !== null);
+    const missCells = cellLookups.filter((c) => c.data === null);
+
+    // Fetch every still-uncached cell concurrently, each scoped to exactly
+    // that cell's own bounds (not the caller's arbitrary viewport) so the
+    // cached entry is reusable by any future viewport that overlaps it.
+    const fetchedMissCells = await Promise.allSettled(
+      missCells.map(async ({ cellKey }) => {
+        const bounds = boundsForGridCell(cellKey);
+        const data = await fetchMapPinsDataForBounds(bounds.swLat, bounds.swLon, bounds.neLat, bounds.neLon);
+        // Save for next time regardless of whether it turns out empty --
+        // an empty cell (genuinely no trails/parks/areas there) is just as
+        // valid a cache entry as a full one, and still saves a future
+        // Overpass call.
+        await saveCachedRegion(cellKey, data);
+        return { cellKey, data };
+      })
+    );
+
+    const allCellResults = [
+      ...hitCells,
+      ...fetchedMissCells
+        .filter((r) => r.status === "fulfilled")
+        .map((r) => r.value),
+    ];
+    const failedCells = fetchedMissCells.filter((r) => r.status === "rejected");
+    if (failedCells.length > 0) {
+      console.error(`Map-pins: ${failedCells.length}/${missCells.length} uncached cells failed to fetch:`,
+        failedCells.map((r) => r.reason?.message || r.reason).join("; "));
+    }
+
+    // If every single cell failed (all misses, all Overpass calls failed)
+    // and we have nothing at all to show, surface that as an error rather
+    // than silently returning an empty map.
+    if (allCellResults.length === 0 && missCells.length > 0) {
+      return res.status(502).json({ error: "Overpass is busy right now — please try again in a minute." });
+    }
+
+    // Merge strategy: dedupe by name, first-occurrence-wins, do NOT sum
+    // distance/segments across cells. Overpass's bbox way-selector includes
+    // a way if ANY of its nodes fall within the bbox, then returns that
+    // way's FULL geometry (not clipped to the bbox) -- so if one continuous
+    // OSM way spans two adjacent cells, both cells' independent queries
+    // would each return that way's complete length. Summing would double-
+    // count it. Keeping only the first occurrence is the safe choice: it
+    // can't double-count, and its downside (an occasional undercount for a
+    // trail split across a cell boundary) is the same pre-existing
+    // limitation this app already has for any trail extending beyond a
+    // single-viewport query -- not a new regression.
     const trailsByName = new Map();
-    const parks = [];
-    const areas = [];
-    const seenParkNames = new Set();
-    const seenAreaNames = new Set();
-
-    for (const el of elements) {
-      const tags = el.tags || {};
-      const name = tags.name;
-      if (!name) continue;
-
-      const isTrail = tags.highway === "path" || tags.highway === "footway" || /^(hiking|foot)$/.test(tags.route || "");
-      const isPark = tags.leisure === "park";
-      const isArea = tags.boundary === "national_park" || tags.boundary === "protected_area";
-
-      if (isTrail) {
-        let segs = [];
-        if (el.type === "relation" && Array.isArray(el.members)) {
-          el.members.forEach((m) => {
-            if (m.geometry && m.geometry.length >= 2) segs.push(m.geometry.filter((p) => p));
-          });
-        } else if (el.geometry && el.geometry.length >= 2) {
-          segs.push(el.geometry.filter((p) => p));
-        }
-        if (segs.length === 0) continue;
-        const lenKm = segs.reduce((sum, seg) => sum + wayLengthKm(seg), 0);
-        const firstPt = segs[0][0];
-        const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
-        const existing = trailsByName.get(name);
-        if (existing) {
-          existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
-          existing.segments += segs.length;
-          existing.segmentsGeom.push(...segCoordsList);
-        } else {
-          trailsByName.set(name, {
-            name,
-            distance_km: Math.round(lenKm * 10) / 10,
-            difficulty: difficultyFromTags(tags),
-            lat: firstPt.lat,
-            lon: firstPt.lon,
-            segments: segs.length,
-            segmentsGeom: segCoordsList,
-          });
-        }
-      } else if (isPark) {
-        if (seenParkNames.has(name)) continue;
-        seenParkNames.add(name);
-        const center = el.center || (el.geometry && el.geometry[0]);
-        if (!center) continue;
-        parks.push({ name, kind: "City / Local Park", lat: center.lat, lon: center.lon });
-      } else if (isArea) {
-        if (seenAreaNames.has(name)) continue;
-        seenAreaNames.add(name);
-        const center = el.center || (el.geometry && el.geometry[0]);
-        if (!center) continue;
-        areas.push({
-          name,
-          kind: tags.boundary === "national_park" ? "National Park" : "Protected Area",
-          lat: center.lat,
-          lon: center.lon,
-        });
-      }
+    const parksByName = new Map();
+    const areasByName = new Map();
+    for (const { data } of allCellResults) {
+      (data.trails || []).forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+      (data.parks || []).forEach((p) => { if (!parksByName.has(p.name)) parksByName.set(p.name, p); });
+      (data.areas || []).forEach((a) => { if (!areasByName.has(a.name)) areasByName.set(a.name, a); });
     }
 
     // Large administrative boundary relations (e.g. a BLM field office
@@ -1307,36 +1394,13 @@ app.get("/api/map-pins", async (req, res) => {
       lat >= swLat - PIN_BOUNDS_BUFFER_DEG && lat <= neLat + PIN_BOUNDS_BUFFER_DEG &&
       lon >= swLon - PIN_BOUNDS_BUFFER_DEG && lon <= neLon + PIN_BOUNDS_BUFFER_DEG;
 
-    const filteredParks = parks.filter((p) => withinBufferedBounds(p.lat, p.lon));
-    const filteredAreas = areas.filter((a) => withinBufferedBounds(a.lat, a.lon));
+    const trails = Array.from(trailsByName.values()).slice(0, 200);
+    const filteredParks = Array.from(parksByName.values()).filter((p) => withinBufferedBounds(p.lat, p.lon)).slice(0, 100);
+    const filteredAreas = Array.from(areasByName.values()).filter((a) => withinBufferedBounds(a.lat, a.lon)).slice(0, 100);
 
-    const trails = Array.from(trailsByName.values())
-      .slice(0, 200)
-      .map((t) => {
-        // Deliberately tiny compared to /api/trails' own decimation (400pt
-        // cap) -- this endpoint can return up to 200 trails per viewport at
-        // once, so each one only needs enough points for a rough on-demand
-        // elevation-gain estimate when a pin is tapped, not a full profile.
-        const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
-        const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
-        const perSegBudget = Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL_MAPPINS / t.segmentsGeom.length));
-        const geometry = totalPoints <= MAX_POINTS_PER_TRAIL_MAPPINS
-          ? t.segmentsGeom
-          : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
-        return {
-          name: t.name,
-          distance_km: t.distance_km,
-          difficulty: t.difficulty,
-          lat: t.lat,
-          lon: t.lon,
-          segments: t.segments,
-          geometry,
-        };
-      });
-
-    // Merge in community-submitted trails whose saved point falls inside this
-    // bounding box — a simple lat/lon range query, no geo-index needed at
-    // this scale (thousands of docs, not millions).
+    // Merge in community-submitted trails whose saved point falls inside
+    // this bounding box — a live query against the full requested viewport
+    // (not per-cell; it's already fast, no need to cache it separately).
     try {
       const collection = await getCommunityTrailsCollection();
       if (collection) {
@@ -1345,10 +1409,7 @@ app.get("/api/map-pins", async (req, res) => {
           lon: { $gte: swLon, $lte: neLon },
         }).limit(50).toArray();
         community.forEach((c) => {
-          // Same lightweight decimation as OSM trails above -- community
-          // routes are user-drawn and can have far more points than needed
-          // for a rough elevation estimate.
-          const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
+          if (trailsByName.has(c.name)) return;
           const rawGeom = Array.isArray(c.geometry) ? c.geometry : [];
           const totalPoints = rawGeom.reduce((s, seg) => s + (seg ? seg.length : 0), 0);
           const perSegBudget = rawGeom.length > 0 ? Math.max(2, Math.floor(MAX_POINTS_PER_TRAIL_MAPPINS / rawGeom.length)) : 2;
@@ -1371,7 +1432,7 @@ app.get("/api/map-pins", async (req, res) => {
       console.error("Community trails merge (map-pins) failed:", communityErr.message || communityErr);
     }
 
-    const result = { trails, parks: filteredParks.slice(0, 100), areas: filteredAreas.slice(0, 100) };
+    const result = { trails, parks: filteredParks, areas: filteredAreas };
     cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
     res.json({ ...result, cached: false });
   } catch (err) {
