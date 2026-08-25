@@ -525,13 +525,31 @@ function parkKind(tags) {
   return "Park";
 }
 
+// Wraps fetch() with a hard timeout via AbortController. Overpass's own
+// [timeout:N] query parameter only bounds how long the SERVER spends
+// processing a query once it starts -- it does nothing if a mirror never
+// responds at all (connection accepted but hung, or silently dropped).
+// Without a client-side timeout, a single unresponsive mirror can leave a
+// fetch() pending indefinitely, which is what caused the "Loading..."
+// freeze this endpoint hit earlier.
+const FETCH_TIMEOUT_MS = 12000;
+async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Shared helper: tries each Overpass mirror in turn for a given query,
 // returning parsed JSON or throwing once all mirrors have failed.
 async function runOverpassQuery(overpassQuery) {
   let lastError = null;
   for (const url of OVERPASS_URLS) {
     try {
-      const resp = await fetch(url, {
+      const resp = await fetchWithTimeout(url, {
         method: "POST",
         headers: {
           "Content-Type": "text/plain",
@@ -543,7 +561,7 @@ async function runOverpassQuery(overpassQuery) {
       if (!resp.ok) { lastError = await resp.text(); continue; }
       return await resp.json();
     } catch (innerErr) {
-      lastError = String(innerErr.message || innerErr);
+      lastError = innerErr.name === "AbortError" ? "Request timed out" : String(innerErr.message || innerErr);
     }
   }
   throw new Error(lastError || "All Overpass mirrors failed");
@@ -1288,32 +1306,6 @@ out tags center;`.trim();
   return { trails, parks, areas };
 }
 
-// Runs `fn` over `items` with at most `limit` concurrent in-flight calls at
-// once, returning results in the same shape as Promise.allSettled. Firing
-// every uncached grid cell's Overpass query simultaneously (one request per
-// cell, up to 9-16 for a single viewport) reliably triggers rate-limiting
-// on the free public Overpass mirrors -- they all fail together, which is
-// indistinguishable from "Overpass is down" from the caller's perspective.
-// Throttling to a handful in flight at a time avoids that self-inflicted
-// burst while still being much faster than doing them one at a time.
-async function runWithConcurrencyLimit(items, limit, fn) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  async function worker() {
-    while (nextIndex < items.length) {
-      const i = nextIndex++;
-      try {
-        results[i] = { status: "fulfilled", value: await fn(items[i], i) };
-      } catch (err) {
-        results[i] = { status: "rejected", reason: err };
-      }
-    }
-  }
-  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
-}
-
 app.get("/api/map-pins", async (req, res) => {
   const swLat = parseFloat(req.query.swLat);
   const swLon = parseFloat(req.query.swLon);
@@ -1354,64 +1346,73 @@ app.get("/api/map-pins", async (req, res) => {
     const hitCells = cellLookups.filter((c) => c.data !== null);
     const missCells = cellLookups.filter((c) => c.data === null);
 
-    // Fetch every still-uncached cell, scoped to exactly that cell's own
-    // bounds (not the caller's arbitrary viewport) so the cached entry is
-    // reusable by any future viewport that overlaps it. Throttled -- see
-    // runWithConcurrencyLimit above for why this can't just be a plain
-    // Promise.allSettled over every miss at once.
-    const MAP_PINS_CELL_FETCH_CONCURRENCY = 3;
-    const fetchedMissCells = await runWithConcurrencyLimit(
-      missCells,
-      MAP_PINS_CELL_FETCH_CONCURRENCY,
-      async ({ cellKey }) => {
+    // If ANY cell is a miss, fetch the whole requested viewport in exactly
+    // ONE Overpass call -- the same request shape/volume as the original
+    // pre-caching version of this endpoint -- rather than one call per
+    // missing cell. Querying per-cell was the actual bug behind the
+    // "Overpass is busy" / hang symptoms: even throttled, splitting one
+    // viewport into up to 16 separate Overpass requests is far more volume
+    // than the free public mirrors tolerate from one IP, and they start
+    // failing or stalling as a block. This keeps Overpass call volume
+    // identical to before caching existed, while still building up the
+    // persistent cache for next time.
+    let freshData = null;
+    if (missCells.length > 0) {
+      freshData = await fetchMapPinsDataForBounds(swLat, swLon, neLat, neLon);
+
+      // Partition the single fresh response into each miss cell's own
+      // slice (by each item's anchor lat/lon) and MERGE it into that
+      // cell's cache (union by name, never removing existing items).
+      // A real viewport is usually smaller than one 0.5deg grid cell, so
+      // requiring a query to fully cover a cell before caching anything
+      // would mean most cells never get cached at all. Instead each cell's
+      // cached data grows more complete over time as different overlapping
+      // viewports touch it -- purely additive, so there's no risk of ever
+      // caching something wrong, only "not yet complete". The one thing
+      // that DOES need full coverage to be safe is caching a cell as
+      // confirmed EMPTY (finding nothing here) -- if this query only
+      // reached a sliver of the cell, "found nothing" doesn't mean the
+      // cell has nothing, so that case is left uncached rather than risk
+      // permanently hiding a trail that's just outside today's viewport.
+      const mergeByName = (existingList, newList) => {
+        const byName = new Map((existingList || []).map((item) => [item.name, item]));
+        newList.forEach((item) => { if (!byName.has(item.name)) byName.set(item.name, item); });
+        return Array.from(byName.values());
+      };
+      await Promise.all(missCells.map(async ({ cellKey }) => {
         const bounds = boundsForGridCell(cellKey);
-        const data = await fetchMapPinsDataForBounds(bounds.swLat, bounds.swLon, bounds.neLat, bounds.neLon);
-        // Save for next time regardless of whether it turns out empty --
-        // an empty cell (genuinely no trails/parks/areas there) is just as
-        // valid a cache entry as a full one, and still saves a future
-        // Overpass call.
-        await saveCachedRegion(cellKey, data);
-        return { cellKey, data };
-      }
-    );
-
-    const allCellResults = [
-      ...hitCells,
-      ...fetchedMissCells
-        .filter((r) => r.status === "fulfilled")
-        .map((r) => r.value),
-    ];
-    const failedCells = fetchedMissCells.filter((r) => r.status === "rejected");
-    if (failedCells.length > 0) {
-      console.error(`Map-pins: ${failedCells.length}/${missCells.length} uncached cells failed to fetch:`,
-        failedCells.map((r) => r.reason?.message || r.reason).join("; "));
+        const fullyCovered = bounds.swLat >= swLat && bounds.neLat <= neLat && bounds.swLon >= swLon && bounds.neLon <= neLon;
+        const inCell = (lat, lon) => lat >= bounds.swLat && lat < bounds.neLat && lon >= bounds.swLon && lon < bounds.neLon;
+        const newTrails = freshData.trails.filter((t) => inCell(t.lat, t.lon));
+        const newParks = freshData.parks.filter((p) => inCell(p.lat, p.lon));
+        const newAreas = freshData.areas.filter((a) => inCell(a.lat, a.lon));
+        const foundSomething = newTrails.length > 0 || newParks.length > 0 || newAreas.length > 0;
+        if (!foundSomething && !fullyCovered) return; // too soon to conclude this cell is empty
+        const existing = (await getCachedRegion(cellKey)) || { trails: [], parks: [], areas: [] };
+        await saveCachedRegion(cellKey, {
+          trails: mergeByName(existing.trails, newTrails),
+          parks: mergeByName(existing.parks, newParks),
+          areas: mergeByName(existing.areas, newAreas),
+        });
+      }));
     }
 
-    // If every single cell failed (all misses, all Overpass calls failed)
-    // and we have nothing at all to show, surface that as an error rather
-    // than silently returning an empty map.
-    if (allCellResults.length === 0 && missCells.length > 0) {
-      return res.status(502).json({ error: "Overpass is busy right now — please try again in a minute." });
-    }
-
-    // Merge strategy: dedupe by name, first-occurrence-wins, do NOT sum
-    // distance/segments across cells. Overpass's bbox way-selector includes
-    // a way if ANY of its nodes fall within the bbox, then returns that
-    // way's FULL geometry (not clipped to the bbox) -- so if one continuous
-    // OSM way spans two adjacent cells, both cells' independent queries
-    // would each return that way's complete length. Summing would double-
-    // count it. Keeping only the first occurrence is the safe choice: it
-    // can't double-count, and its downside (an occasional undercount for a
-    // trail split across a cell boundary) is the same pre-existing
-    // limitation this app already has for any trail extending beyond a
-    // single-viewport query -- not a new regression.
+    // Merge strategy: dedupe by name, first-occurrence-wins. Cached hit
+    // cells first, then the fresh whole-viewport data (which covers every
+    // miss cell for THIS response, even the edge ones that didn't get
+    // persisted above, so nothing currently on screen is ever dropped).
     const trailsByName = new Map();
     const parksByName = new Map();
     const areasByName = new Map();
-    for (const { data } of allCellResults) {
+    for (const { data } of hitCells) {
       (data.trails || []).forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
       (data.parks || []).forEach((p) => { if (!parksByName.has(p.name)) parksByName.set(p.name, p); });
       (data.areas || []).forEach((a) => { if (!areasByName.has(a.name)) areasByName.set(a.name, a); });
+    }
+    if (freshData) {
+      freshData.trails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+      freshData.parks.forEach((p) => { if (!parksByName.has(p.name)) parksByName.set(p.name, p); });
+      freshData.areas.forEach((a) => { if (!areasByName.has(a.name)) areasByName.set(a.name, a); });
     }
 
     // Large administrative boundary relations (e.g. a BLM field office
