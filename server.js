@@ -204,7 +204,7 @@ app.get("/api/trails", async (req, res) => {
   }
 
   const cacheKey = `\( {iso}:: \){q.toLowerCase()}::\( {near.toLowerCase()}:: \){
-    hasDirectPoint ? `\( {directLat}, \){directLon}` : ""
+      hasDirectPoint ? `\( {directLat}, \){directLon}` : ""
   }`;
   const cached = cache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
