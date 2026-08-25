@@ -1288,6 +1288,32 @@ out tags center;`.trim();
   return { trails, parks, areas };
 }
 
+// Runs `fn` over `items` with at most `limit` concurrent in-flight calls at
+// once, returning results in the same shape as Promise.allSettled. Firing
+// every uncached grid cell's Overpass query simultaneously (one request per
+// cell, up to 9-16 for a single viewport) reliably triggers rate-limiting
+// on the free public Overpass mirrors -- they all fail together, which is
+// indistinguishable from "Overpass is down" from the caller's perspective.
+// Throttling to a handful in flight at a time avoids that self-inflicted
+// burst while still being much faster than doing them one at a time.
+async function runWithConcurrencyLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i], i) };
+      } catch (err) {
+        results[i] = { status: "rejected", reason: err };
+      }
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 app.get("/api/map-pins", async (req, res) => {
   const swLat = parseFloat(req.query.swLat);
   const swLon = parseFloat(req.query.swLon);
@@ -1328,11 +1354,16 @@ app.get("/api/map-pins", async (req, res) => {
     const hitCells = cellLookups.filter((c) => c.data !== null);
     const missCells = cellLookups.filter((c) => c.data === null);
 
-    // Fetch every still-uncached cell concurrently, each scoped to exactly
-    // that cell's own bounds (not the caller's arbitrary viewport) so the
-    // cached entry is reusable by any future viewport that overlaps it.
-    const fetchedMissCells = await Promise.allSettled(
-      missCells.map(async ({ cellKey }) => {
+    // Fetch every still-uncached cell, scoped to exactly that cell's own
+    // bounds (not the caller's arbitrary viewport) so the cached entry is
+    // reusable by any future viewport that overlaps it. Throttled -- see
+    // runWithConcurrencyLimit above for why this can't just be a plain
+    // Promise.allSettled over every miss at once.
+    const MAP_PINS_CELL_FETCH_CONCURRENCY = 3;
+    const fetchedMissCells = await runWithConcurrencyLimit(
+      missCells,
+      MAP_PINS_CELL_FETCH_CONCURRENCY,
+      async ({ cellKey }) => {
         const bounds = boundsForGridCell(cellKey);
         const data = await fetchMapPinsDataForBounds(bounds.swLat, bounds.swLon, bounds.neLat, bounds.neLon);
         // Save for next time regardless of whether it turns out empty --
@@ -1341,7 +1372,7 @@ app.get("/api/map-pins", async (req, res) => {
         // Overpass call.
         await saveCachedRegion(cellKey, data);
         return { cellKey, data };
-      })
+      }
     );
 
     const allCellResults = [
