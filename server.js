@@ -202,10 +202,14 @@ app.get("/api/trails", async (req, res) => {
         "Unknown or missing state. Send a full state name (California) or two-letter code (CA).",
     });
   }
-
-  const cacheKey = `\( {iso}:: \){q.toLowerCase()}::\( {near.toLowerCase()}:: \){
-      hasDirectPoint ? `\( {directLat}, \){directLon}` : ""
-  }`;
+  const cacheKey =
+    iso +
+    "::" +
+    q.toLowerCase() +
+    "::" +
+    near.toLowerCase() +
+    "::" +
+    (hasDirectPoint ? directLat + "," + directLon : "");
   const cached = cache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.json({ trails: cached.data, cached: true });
