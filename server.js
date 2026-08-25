@@ -544,7 +544,11 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
 }
 
 // Shared helper: tries each Overpass mirror in turn for a given query,
-// returning parsed JSON or throwing once all mirrors have failed.
+// returning parsed JSON or throwing once all mirrors have failed. Logs
+// every individual mirror's failure (not just the last one) -- without
+// this, a caller only ever sees whichever mirror happened to be tried
+// last, which makes it impossible to tell "only this one mirror is down"
+// apart from "all three are unreachable" from the logs alone.
 async function runOverpassQuery(overpassQuery) {
   let lastError = null;
   for (const url of OVERPASS_URLS) {
@@ -558,10 +562,15 @@ async function runOverpassQuery(overpassQuery) {
         },
         body: overpassQuery,
       });
-      if (!resp.ok) { lastError = await resp.text(); continue; }
+      if (!resp.ok) {
+        lastError = await resp.text();
+        console.error(`Overpass mirror returned ${resp.status}: ${url}`, lastError.slice(0, 300));
+        continue;
+      }
       return await resp.json();
     } catch (innerErr) {
       lastError = innerErr.name === "AbortError" ? "Request timed out" : String(innerErr.message || innerErr);
+      console.error(`Overpass mirror unreachable: ${url}`, lastError);
     }
   }
   throw new Error(lastError || "All Overpass mirrors failed");
@@ -1357,9 +1366,20 @@ app.get("/api/map-pins", async (req, res) => {
     // identical to before caching existed, while still building up the
     // persistent cache for next time.
     let freshData = null;
+    let liveOverpassFailed = false;
     if (missCells.length > 0) {
-      freshData = await fetchMapPinsDataForBounds(swLat, swLon, neLat, neLon);
+      try {
+        freshData = await fetchMapPinsDataForBounds(swLat, swLon, neLat, neLon);
+      } catch (liveErr) {
+        // Overpass being unreachable shouldn't mean the map shows nothing
+        // -- fall through and serve whatever's already cached for the
+        // hit cells (if any). Only the miss cells stay empty for now.
+        liveOverpassFailed = true;
+        console.error("Live Overpass failed for map-pins; serving cache only:", liveErr.message || liveErr);
+      }
+    }
 
+    if (freshData) {
       // Partition the single fresh response into each miss cell's own
       // slice (by each item's anchor lat/lon) and MERGE it into that
       // cell's cache (union by name, never removing existing items).
@@ -1397,10 +1417,18 @@ app.get("/api/map-pins", async (req, res) => {
       }));
     }
 
+    // Nothing cached for this viewport at all, AND the live fetch that was
+    // supposed to fill that gap failed -- there's genuinely nothing to
+    // show, so surface a real error instead of a silently empty map.
+    if (hitCells.length === 0 && !freshData && liveOverpassFailed) {
+      return res.status(502).json({ error: "Overpass is busy right now — please try again in a minute." });
+    }
+
     // Merge strategy: dedupe by name, first-occurrence-wins. Cached hit
-    // cells first, then the fresh whole-viewport data (which covers every
-    // miss cell for THIS response, even the edge ones that didn't get
-    // persisted above, so nothing currently on screen is ever dropped).
+    // cells first, then the fresh whole-viewport data if the live fetch
+    // succeeded (covers every miss cell for THIS response, even edge
+    // cells that didn't get persisted above). If the live fetch failed,
+    // freshData is null and this just serves whatever was already cached.
     const trailsByName = new Map();
     const parksByName = new Map();
     const areasByName = new Map();
@@ -1465,6 +1493,14 @@ app.get("/api/map-pins", async (req, res) => {
     }
 
     const result = { trails, parks: filteredParks, areas: filteredAreas };
+    if (liveOverpassFailed) {
+      // Don't cache a degraded (cache-only, possibly incomplete) result as
+      // if it were the definitive answer for this viewport -- the next
+      // request for the same area should retry Overpass rather than reuse
+      // this partial snapshot for a full 10 minutes.
+      result.liveDataUnavailable = true;
+      return res.json({ ...result, cached: false });
+    }
     cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
     res.json({ ...result, cached: false });
   } catch (err) {
