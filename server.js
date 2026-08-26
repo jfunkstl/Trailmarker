@@ -8,11 +8,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json());
 const PORT = process.env.PORT || 3000;
+// Mirror list verified directly against the OSM wiki's currently-maintained
+// public-instance table (wiki.openstreetmap.org/wiki/Overpass_API) rather
+// than assumed from memory -- two of the three original mirrors turned out
+// to be stale:
+//   - overpass.kumi.systems was renamed to overpass.private.coffee (same
+//     operator, "no rate limit in place" per their own usage policy). The
+//     old kumi.systems domain is legacy, which likely explains its mixed
+//     502/timeout behavior versus a clean connect failure.
+//   - overpass.openstreetmap.ru isn't on the current official list at all
+//     -- it appears to simply be defunct, matching that it never once
+//     succeeded across every live test.
+// Replaced with the VK Maps instance (maps.mail.ru) as genuinely different
+// hosting than overpass-api.de's Hetzner infrastructure -- real network
+// path diversity if that path is ever the one having trouble.
 const OVERPASS_URLS = [
   process.env.OVERPASS_URL,
   "https://overpass-api.de/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://overpass.openstreetmap.ru/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ].filter(Boolean);
 
 // Shared community-submitted trails — a real, persistent, shared database
