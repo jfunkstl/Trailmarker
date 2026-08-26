@@ -1176,6 +1176,70 @@ app.get("/api/weather", async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// TEMPORARY DIAGNOSTIC: GET /api/debug-overpass
+//
+// A day of complete, simultaneous failure across all three independent
+// Overpass mirrors isn't consistent with a transient blip anymore -- this
+// tests a few different requests directly from Render's own network so we
+// can see exactly what's happening instead of guessing from the outside.
+// Safe to delete once the underlying issue is understood.
+// ---------------------------------------------------------------------------
+app.get("/api/debug-overpass", async (_req, res) => {
+  const results = {};
+
+  // 1. General outbound internet sanity check -- totally unrelated to
+  // Overpass. If this fails too, the problem is Render's egress in
+  // general, not anything specific to Overpass's mirrors.
+  try {
+    const start = Date.now();
+    const resp = await fetchWithTimeout("https://api.github.com", {}, 8000);
+    results.generalInternet = { ok: resp.ok, status: resp.status, ms: Date.now() - start };
+  } catch (err) {
+    results.generalInternet = { ok: false, error: err.name === "AbortError" ? "timed out" : String(err.message || err) };
+  }
+
+  // 2. A lightweight GET to Overpass's own status endpoint (no POST, no
+  // query body) -- if this succeeds while the POST-based queries fail,
+  // that points at something specific to the POST request shape rather
+  // than a full IP-level block.
+  try {
+    const start = Date.now();
+    const resp = await fetchWithTimeout("https://overpass-api.de/api/status", {}, 8000);
+    const text = await resp.text();
+    results.overpassStatusGet = { ok: resp.ok, status: resp.status, ms: Date.now() - start, body: text.slice(0, 300) };
+  } catch (err) {
+    results.overpassStatusGet = { ok: false, error: err.name === "AbortError" ? "timed out" : String(err.message || err) };
+  }
+
+  // 3. The exact same POST request shape /api/map-pins actually uses,
+  // against each configured mirror in turn, with full error detail.
+  results.overpassMirrors = [];
+  const tinyQuery = `[out:json][timeout:10];node(0,0,0.01,0.01);out;`;
+  for (const url of OVERPASS_URLS) {
+    const start = Date.now();
+    try {
+      const resp = await fetchWithTimeout(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
+          "Accept": "application/json, text/plain, */*",
+        },
+        body: tinyQuery,
+      }, 10000);
+      const text = await resp.text();
+      results.overpassMirrors.push({ url, ok: resp.ok, status: resp.status, ms: Date.now() - start, body: text.slice(0, 200) });
+    } catch (err) {
+      results.overpassMirrors.push({ url, ok: false, ms: Date.now() - start, error: err.name === "AbortError" ? "timed out" : String(err.message || err), cause: err.cause ? String(err.cause) : null });
+    }
+  }
+
+  results.overpassUrlEnvVarSet = Boolean(process.env.OVERPASS_URL);
+
+  res.json(results);
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/map-pins?swLat=&swLon=&neLat=&neLon=
 //
 // Bounding-box endpoint for the map-first Discover redesign: given a Leaflet
