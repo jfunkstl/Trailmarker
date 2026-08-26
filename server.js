@@ -122,6 +122,11 @@ async function getCachedRegionsCollection() {
 // Looks up a single grid cell's cached data, if any. Returns null both for
 // a genuine cache miss AND when MongoDB isn't configured/reachable --
 // callers should treat both cases identically: fall back to a live query.
+// The returned object (when present) may be "complete" (a past query's
+// bounds fully covered this cell -- safe to trust forever, skip Overpass)
+// or merely "partial" (some data was found here, but only from a query
+// that covered a slice of the cell) -- see the completeness handling in
+// /api/map-pins for why that distinction matters.
 async function getCachedRegion(cellKey) {
   const collection = await getCachedRegionsCollection();
   if (!collection) return null;
@@ -1442,14 +1447,23 @@ app.get("/api/map-pins", async (req, res) => {
 
   try {
     // Split the requested viewport into fixed grid cells and check the
-    // persistent cache for each one independently.
+    // persistent cache for each one independently. A cell only counts as a
+    // true "hit" (skip Overpass entirely) if it was previously marked
+    // `complete: true` -- meaning some past query's bounds fully covered
+    // it. A cell that merely HAS some cached data, but was only ever
+    // touched by a narrower query, still counts as a miss: otherwise the
+    // first (small, partial) viewport to ever touch a cell would
+    // permanently lock in that sparse snapshot, and wider viewports
+    // touching the same cell later would silently skip Overpass and show
+    // stale, incomplete data forever -- exactly the "whole areas missing"
+    // bug this fixes.
     const cellKeys = gridCellsForBounds(swLat, swLon, neLat, neLon);
     const cellLookups = await Promise.all(
       cellKeys.map(async (cellKey) => ({ cellKey, data: await getCachedRegion(cellKey) }))
     );
 
-    const hitCells = cellLookups.filter((c) => c.data !== null);
-    const missCells = cellLookups.filter((c) => c.data === null);
+    const hitCells = cellLookups.filter((c) => c.data && c.data.complete === true);
+    const missCells = cellLookups.filter((c) => !c.data || c.data.complete !== true);
 
     // If ANY cell is a miss, fetch the whole requested viewport in exactly
     // ONE Overpass call -- the same request shape/volume as the original
@@ -1478,24 +1492,21 @@ app.get("/api/map-pins", async (req, res) => {
     if (freshData) {
       // Partition the single fresh response into each miss cell's own
       // slice (by each item's anchor lat/lon) and MERGE it into that
-      // cell's cache (union by name, never removing existing items).
-      // A real viewport is usually smaller than one 0.5deg grid cell, so
-      // requiring a query to fully cover a cell before caching anything
-      // would mean most cells never get cached at all. Instead each cell's
-      // cached data grows more complete over time as different overlapping
-      // viewports touch it -- purely additive, so there's no risk of ever
-      // caching something wrong, only "not yet complete". The one thing
-      // that DOES need full coverage to be safe is caching a cell as
-      // confirmed EMPTY (finding nothing here) -- if this query only
-      // reached a sliver of the cell, "found nothing" doesn't mean the
-      // cell has nothing, so that case is left uncached rather than risk
-      // permanently hiding a trail that's just outside today's viewport.
+      // cell's existing (possibly partial) cached data -- union by name,
+      // never removing existing items, so a cell's cached data only ever
+      // grows more complete over time as different overlapping viewports
+      // touch it. A cell is marked `complete: true` (a genuine future
+      // hit, safe to skip Overpass entirely) only when THIS query's
+      // bounds fully contain it; otherwise it's saved as still-partial
+      // (`complete: false`) so a future, larger-viewport request that
+      // touches it will correctly treat it as a miss and keep filling it
+      // in, rather than trusting a still-incomplete snapshot forever.
       const mergeByName = (existingList, newList) => {
         const byName = new Map((existingList || []).map((item) => [item.name, item]));
         newList.forEach((item) => { if (!byName.has(item.name)) byName.set(item.name, item); });
         return Array.from(byName.values());
       };
-      await Promise.all(missCells.map(async ({ cellKey }) => {
+      await Promise.all(missCells.map(async ({ cellKey, data: existingPartial }) => {
         const bounds = boundsForGridCell(cellKey);
         const fullyCovered = bounds.swLat >= swLat && bounds.neLat <= neLat && bounds.swLon >= swLon && bounds.neLon <= neLon;
         const inCell = (lat, lon) => lat >= bounds.swLat && lat < bounds.neLat && lon >= bounds.swLon && lon < bounds.neLon;
@@ -1503,12 +1514,16 @@ app.get("/api/map-pins", async (req, res) => {
         const newParks = freshData.parks.filter((p) => inCell(p.lat, p.lon));
         const newAreas = freshData.areas.filter((a) => inCell(a.lat, a.lon));
         const foundSomething = newTrails.length > 0 || newParks.length > 0 || newAreas.length > 0;
-        if (!foundSomething && !fullyCovered) return; // too soon to conclude this cell is empty
-        const existing = (await getCachedRegion(cellKey)) || { trails: [], parks: [], areas: [] };
+        // Nothing new, not fully covered, and nothing was ever cached here
+        // before -- too soon to conclude anything, don't write a cache
+        // entry at all yet (leave it a clean miss for next time).
+        if (!foundSomething && !fullyCovered && !existingPartial) return;
+        const base = existingPartial || { trails: [], parks: [], areas: [] };
         await saveCachedRegion(cellKey, {
-          trails: mergeByName(existing.trails, newTrails),
-          parks: mergeByName(existing.parks, newParks),
-          areas: mergeByName(existing.areas, newAreas),
+          trails: mergeByName(base.trails, newTrails),
+          parks: mergeByName(base.parks, newParks),
+          areas: mergeByName(base.areas, newAreas),
+          complete: fullyCovered,
         });
       }));
     }
