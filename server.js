@@ -532,7 +532,15 @@ function parkKind(tags) {
 // Without a client-side timeout, a single unresponsive mirror can leave a
 // fetch() pending indefinitely, which is what caused the "Loading..."
 // freeze this endpoint hit earlier.
-const FETCH_TIMEOUT_MS = 12000;
+//
+// 20s (not the original 12s) -- a live diagnostic showed a TINY single-node
+// query against overpass-api.de taking ~4s just for connection + response.
+// The real /api/map-pins query is far larger (full viewport, multiple tag
+// filters across trails/parks/areas), so it needs real headroom under
+// Overpass's own internal [timeout:25] query budget rather than being cut
+// off by an overly tight client-side timeout before a legitimate (if slow)
+// response has a chance to arrive.
+const FETCH_TIMEOUT_MS = 20000;
 async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -549,28 +557,38 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS)
 // this, a caller only ever sees whichever mirror happened to be tried
 // last, which makes it impossible to tell "only this one mirror is down"
 // apart from "all three are unreachable" from the logs alone.
+//
+// Retries each mirror once before moving on. A live diagnostic showed
+// overpass-api.de intermittently returning a raw connection failure
+// ("fetch failed") on one attempt and a clean 200 with real data moments
+// later on another -- that's flakiness, not a hard block, so a single
+// retry on the same (otherwise-healthy) mirror is worth it before falling
+// through to mirrors already confirmed to be in worse shape right now.
+const OVERPASS_ATTEMPTS_PER_MIRROR = 2;
 async function runOverpassQuery(overpassQuery) {
   let lastError = null;
   for (const url of OVERPASS_URLS) {
-    try {
-      const resp = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
-          "Accept": "application/json, text/plain, */*",
-        },
-        body: overpassQuery,
-      });
-      if (!resp.ok) {
-        lastError = await resp.text();
-        console.error(`Overpass mirror returned ${resp.status}: ${url}`, lastError.slice(0, 300));
-        continue;
+    for (let attempt = 1; attempt <= OVERPASS_ATTEMPTS_PER_MIRROR; attempt++) {
+      try {
+        const resp = await fetchWithTimeout(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "text/plain",
+            "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)",
+            "Accept": "application/json, text/plain, */*",
+          },
+          body: overpassQuery,
+        });
+        if (!resp.ok) {
+          lastError = await resp.text();
+          console.error(`Overpass mirror returned ${resp.status} (attempt ${attempt}/${OVERPASS_ATTEMPTS_PER_MIRROR}): ${url}`, lastError.slice(0, 300));
+          continue;
+        }
+        return await resp.json();
+      } catch (innerErr) {
+        lastError = innerErr.name === "AbortError" ? "Request timed out" : String(innerErr.message || innerErr);
+        console.error(`Overpass mirror unreachable (attempt ${attempt}/${OVERPASS_ATTEMPTS_PER_MIRROR}): ${url}`, lastError);
       }
-      return await resp.json();
-    } catch (innerErr) {
-      lastError = innerErr.name === "AbortError" ? "Request timed out" : String(innerErr.message || innerErr);
-      console.error(`Overpass mirror unreachable: ${url}`, lastError);
     }
   }
   throw new Error(lastError || "All Overpass mirrors failed");
