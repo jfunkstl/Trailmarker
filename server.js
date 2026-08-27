@@ -65,11 +65,21 @@ async function getCommunityTrailsCollection() {
 // /api/map-pins below.
 // ---------------------------------------------------------------------------
 
-// Fixed lat/lon grid, ~0.5deg cells (roughly 35-55km depending on latitude).
-// Chosen so a typical /api/map-pins viewport (max 1.5deg span, per
-// MAP_PINS_MAX_SPAN_DEG below) only ever needs to touch a handful of cells
-// (up to 3x3=9), not dozens.
-const CACHE_GRID_SIZE_DEG = 0.5;
+// Fixed lat/lon grid, ~0.15deg cells (roughly 10-17km depending on
+// latitude). Originally 0.5deg, but that was too coarse to ever actually
+// achieve "complete" status in practice: a cell only gets marked complete
+// when a single query's bounds fully contain it, and a realistic pan is
+// usually smaller than 0.5deg or straddles cell boundaries such that it
+// fully contains zero cells (verified directly -- a typical ~0.7deg
+// viewport touched 4 cells and fully covered none of them at the 0.5deg
+// size). At 0.15deg, an ordinary pan is far more likely to fully contain
+// at least one cell, so completeness -- and the "instant, no-Overpass"
+// repeat-visit speedup it enables -- actually gets reached in normal use
+// instead of staying perpetually just out of reach. The tradeoff is more
+// grid cells (and so more parallel MongoDB lookups) per request at the
+// largest allowed viewport (MAP_PINS_MAX_SPAN_DEG below) -- still cheap,
+// since those are simple indexed reads, not Overpass calls.
+const CACHE_GRID_SIZE_DEG = 0.15;
 
 // Given a bounding box, returns the list of grid cell keys it overlaps.
 // Two overlapping-but-not-identical viewports will share most of their
@@ -78,8 +88,8 @@ const CACHE_GRID_SIZE_DEG = 0.5;
 // the map's exact viewport changes continuously as someone pans.
 function gridCellsForBounds(swLat, swLon, neLat, neLon) {
   // A tiny epsilon on the upper bounds prevents a bbox edge that lands
-  // exactly on a 0.5deg grid line from counting one extra "phantom" cell
-  // it doesn't actually have any real overlap with (Math.floor of an exact
+  // exactly on a grid line from counting one extra "phantom" cell it
+  // doesn't actually have any real overlap with (Math.floor of an exact
   // boundary value belongs to the next cell up, not the one below it).
   const EPSILON = 1e-9;
   const minCellLat = Math.floor(swLat / CACHE_GRID_SIZE_DEG);
