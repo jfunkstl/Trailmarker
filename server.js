@@ -168,6 +168,74 @@ async function saveCachedRegion(cellKey, data) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Persisted VIEWPORT cache -- a second, complementary layer on top of the
+// per-cell grid cache above. The grid cache only ever produces a fast,
+// no-Overpass hit for a viewport once every cell it touches has been
+// FULLY covered by some past query -- but that's mathematically impossible
+// to ever reach if someone's typical zoom level is smaller than one grid
+// cell (a viewport can only fully contain a cell if it's at least as wide
+// as the cell itself). Someone panning back to roughly the same close-in
+// neighborhood view, over and over, could stay a permanent miss under the
+// grid cache alone even after many visits.
+//
+// This layer sidesteps that entirely: it caches the ACTUAL requested
+// viewport (rounded to tolerate minor pan jitter), independent of grid
+// cells or completeness. It's the persisted, longer-lived, coarser-grained
+// sibling of the short-lived in-memory `cache` Map below -- that one only
+// survives ~10 minutes and resets on every server restart; this one is
+// durable and meant to make "I keep coming back to this exact spot" fast
+// regardless of zoom level or server uptime.
+// ---------------------------------------------------------------------------
+const VIEWPORT_CACHE_ROUND_DEG = 0.05; // ~5km -- coarser than the 0.01deg in-memory cache, to tolerate normal pan/zoom jitter between visits to "the same spot"
+const VIEWPORT_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days -- trail/park data is near-static, so this is a light hygiene bound, not a tight freshness requirement
+
+async function getViewportCacheCollection() {
+  const clientPromise = getMongoClient();
+  if (!clientPromise) return null;
+  try {
+    const client = await clientPromise;
+    return client.db("trailseeker").collection("mappins_viewport_cache");
+  } catch (err) {
+    return null;
+  }
+}
+
+function roundForViewportCache(swLat, swLon, neLat, neLon) {
+  const r = (n) => Math.round(n / VIEWPORT_CACHE_ROUND_DEG) * VIEWPORT_CACHE_ROUND_DEG;
+  return `${r(swLat).toFixed(2)},${r(swLon).toFixed(2)},${r(neLat).toFixed(2)},${r(neLon).toFixed(2)}`;
+}
+
+async function getPersistedViewport(viewportKey) {
+  const collection = await getViewportCacheCollection();
+  if (!collection) return null;
+  try {
+    const doc = await collection.findOne({ viewportKey });
+    if (!doc) return null;
+    if (Date.now() - new Date(doc.cachedAt).getTime() > VIEWPORT_CACHE_MAX_AGE_MS) return null; // stale, treat as a miss
+    return doc.data;
+  } catch (err) {
+    console.error(`Viewport cache lookup failed for ${viewportKey}:`, err.message || err);
+    return null;
+  }
+}
+
+async function savePersistedViewport(viewportKey, data) {
+  const collection = await getViewportCacheCollection();
+  if (!collection) return false;
+  try {
+    await collection.updateOne(
+      { viewportKey },
+      { $set: { viewportKey, data, cachedAt: new Date() } },
+      { upsert: true }
+    );
+    return true;
+  } catch (err) {
+    console.error(`Viewport cache save failed for ${viewportKey}:`, err.message || err);
+    return false;
+  }
+}
+
 // Simple in-memory cache so repeat searches don't hammer the public Overpass
 // endpoint (it's free, shared infrastructure and rate-limits aggressively).
 const cache = new Map();
@@ -1446,13 +1514,28 @@ app.get("/api/map-pins", async (req, res) => {
 
   // Round the bbox to ~1km precision so small pans/zooms hit the same
   // fast-path in-memory cache entry instead of fragmenting it with
-  // near-duplicate keys. This whole-viewport cache is checked first and is
-  // separate from (and faster than) the per-cell persistent cache below.
+  // near-duplicate keys. This whole-viewport cache is the fastest layer,
+  // but only lives in this process's memory for 10 minutes and resets on
+  // every server restart.
   const round = (n) => Math.round(n * 100) / 100;
   const cacheKey = `mapPins::${round(swLat)},${round(swLon)},${round(neLat)},${round(neLon)}`;
   const cached = cache.get(cacheKey);
   if (cached && cached.expires > Date.now()) {
     return res.json({ ...cached.data, cached: true });
+  }
+
+  // Second, persisted, longer-lived, coarser-grained layer: is this
+  // roughly the same viewport someone has already loaded before, at any
+  // point in the past (any user, any time up to VIEWPORT_CACHE_MAX_AGE_MS
+  // ago)? This is what makes "I keep panning back to the same spot" fast
+  // even when the per-cell grid cache below can't help (e.g. a close-in
+  // zoom level smaller than one grid cell, which can never fully cover a
+  // cell no matter how many times it's revisited).
+  const viewportKey = roundForViewportCache(swLat, swLon, neLat, neLon);
+  const persistedViewport = await getPersistedViewport(viewportKey);
+  if (persistedViewport) {
+    cache.set(cacheKey, { data: persistedViewport, expires: Date.now() + CACHE_TTL_MS });
+    return res.json({ ...persistedViewport, cached: true });
   }
 
   try {
@@ -1615,14 +1698,16 @@ app.get("/api/map-pins", async (req, res) => {
 
     const result = { trails, parks: filteredParks, areas: filteredAreas };
     if (liveOverpassFailed) {
-      // Don't cache a degraded (cache-only, possibly incomplete) result as
-      // if it were the definitive answer for this viewport -- the next
+      // Don't persist a degraded (cache-only, possibly incomplete) result
+      // as if it were the definitive answer for this viewport -- the next
       // request for the same area should retry Overpass rather than reuse
-      // this partial snapshot for a full 10 minutes.
+      // this partial snapshot, whether from the short-lived in-memory
+      // cache or the longer-lived persisted viewport cache.
       result.liveDataUnavailable = true;
       return res.json({ ...result, cached: false });
     }
     cache.set(cacheKey, { data: result, expires: Date.now() + CACHE_TTL_MS });
+    await savePersistedViewport(viewportKey, result);
     res.json({ ...result, cached: false });
   } catch (err) {
     console.error("Map-pins lookup failed:", err.message || err);
