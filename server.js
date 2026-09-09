@@ -1381,6 +1381,77 @@ const MAP_PINS_MAX_SPAN_DEG = 1.5;
 // estimate when a pin is tapped, not a full profile.
 const MAX_POINTS_PER_TRAIL_MAPPINS = 30;
 
+// ---------------------------------------------------------------------------
+// Colorado COTREX (Colorado Trail Explorer) integration -- gap-fills the
+// map with Colorado's official statewide trail dataset (~40,000 miles from
+// 225+ land managers) alongside OSM data, since OSM alone is missing many
+// local/regional trail systems OSM contributors haven't mapped.
+//
+// Endpoint and field names verified directly against gis.colorado.gov's own
+// ArcGIS REST Services Directory before writing this (never guess API
+// params/fields -- past USGS EPQS mistake). Confirmed: layer 40 on the
+// Colorado_State_Basemap MapServer, copyright "Colorado Parks & Wildlife GIS
+// Unit", esriGeometryPolyline. Native spatial reference is Web Mercator
+// (3857), so outSR=4326 is required to get plain lat/lon back.
+// ---------------------------------------------------------------------------
+const COTREX_URL = "https://gis.colorado.gov/public/rest/services/OIT/Colorado_State_Basemap/MapServer/40/query";
+// Colorado's documented extent on the COTREX layer itself -- used to skip
+// querying COTREX entirely for viewports that don't overlap Colorado at
+// all, since it's a state-only dataset and there's no point calling it for
+// someone panning around, say, Oregon.
+const COLORADO_BOUNDS = { swLat: 36.9, swLon: -109.1, neLat: 41.1, neLon: -102.0 };
+function boundsOverlapColorado(swLat, swLon, neLat, neLon) {
+  return swLat <= COLORADO_BOUNDS.neLat && neLat >= COLORADO_BOUNDS.swLat &&
+    swLon <= COLORADO_BOUNDS.neLon && neLon >= COLORADO_BOUNDS.swLon;
+}
+
+async function fetchCotrexTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapColorado(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`; // esriGeometryEnvelope order: xmin(lon),ymin(lat),xmax(lon),ymax(lat)
+  const url = `${COTREX_URL}?geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=name,length_mi_,surface,manager&outSR=4326&f=geojson`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`COTREX query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    const features = data.features || [];
+    const byName = new Map();
+    features.forEach((f) => {
+      const props = f.properties || {};
+      const name = props.name;
+      const geom = f.geometry;
+      if (!name || !geom) return;
+      // GeoJSON LineString/MultiLineString coords are [lon,lat] -- flip to [lat,lon].
+      const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+      const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+      if (segCoordsList.length === 0) return;
+      const lenKm = (Number(props.length_mi_) || 0) * 1.60934;
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: "Unknown", // COTREX has no verified difficulty-rating field equivalent to OSM's sac_scale
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values());
+  } catch (err) {
+    console.error("COTREX trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // Runs one Overpass query scoped to exactly the given bounds and returns
 // the parsed { trails, parks, areas } for that area alone. Extracted out of
 // the route handler so it can be called once per still-uncached grid cell,
@@ -1472,6 +1543,18 @@ out tags center;`.trim();
         lon: center.lon,
       });
     }
+  }
+
+  // Merge in Colorado's official COTREX trail data, filling gaps OSM alone
+  // doesn't cover (many local/regional trail systems aren't in OSM at all).
+  // Skip-if-already-present, same pattern used for every other merged
+  // source in this app (NPS/USGS in /api/trails) -- OSM data is kept as
+  // the primary source when both have the same named trail.
+  try {
+    const cotrexTrails = await fetchCotrexTrails(swLat, swLon, neLat, neLon);
+    cotrexTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (cotrexErr) {
+    console.error("COTREX merge (map-pins) failed:", cotrexErr.message || cotrexErr);
   }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
