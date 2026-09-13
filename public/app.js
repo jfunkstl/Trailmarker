@@ -607,8 +607,17 @@ function makeEditor(map) {
     waypointGroup: L.layerGroup().addTo(map),
     snapIndicator: null,
     freshSegment: true,
-    startCutIndex: 0,
-    endCutIndex: null,
+    // Start/end are tracked as actual [lat,lon] coordinates, not array
+    // indices. chainSegmentsFromStart() can reorder AND reverse segments
+    // every time it runs, so an index computed against one ordering (e.g.
+    // the raw drawing order) silently points at the wrong point once the
+    // chained order differs -- which is exactly what caused snap-to-
+    // endpoint accuracy bugs and start/end collapsing onto each other
+    // after edits. A coordinate is a stable identity; a position in a
+    // re-sortable array is not. null means "use the natural start/end of
+    // whatever the current chained order produces."
+    startAnchor: null,
+    endAnchor: null,
     onTrailChange: null,
   };
 }
@@ -739,17 +748,19 @@ function editorUpdateWaypoints(editor) {
   if (isOverlapping) {
     const splitMarker = L.marker(startPt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup);
     splitMarker.on("dragend", (e) => {
+      // Snap the drop point to the nearest actual segment endpoint, then
+      // store that COORDINATE directly as both anchors -- no index lookup
+      // needed at all, so there's nothing that can go stale when segments
+      // get reordered/reversed by chainSegmentsFromStart() on the next
+      // redraw. If the drop wasn't near a valid endpoint, leave the
+      // anchors untouched (the marker visually snaps back to where it
+      // was), matching the original snap-or-cancel behavior.
       const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      const allFlat = editor.segments.flat();
-
       if (snap) {
-        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
-        if (snapIdx !== -1) {
-          editor.startCutIndex = snapIdx;
-          editor.endCutIndex = snapIdx;
-        }
+        const anchor = [snap.latlng[0], snap.latlng[1]];
+        editor.startAnchor = anchor;
+        editor.endAnchor = anchor;
       }
-
       editorRedraw(editor);
     });
   } else {
@@ -758,25 +769,17 @@ function editorUpdateWaypoints(editor) {
 
     startMarker.on("dragend", (e) => {
       const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      const allFlat = editor.segments.flat();
-
       if (snap) {
-        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
-        if (snapIdx !== -1) editor.startCutIndex = snapIdx;
+        editor.startAnchor = [snap.latlng[0], snap.latlng[1]];
       }
-
       editorRedraw(editor);
     });
 
     endMarker.on("dragend", (e) => {
       const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      const allFlat = editor.segments.flat();
-
       if (snap) {
-        const snapIdx = allFlat.findIndex((p) => p[0] === snap.latlng[0] && p[1] === snap.latlng[1]);
-        if (snapIdx !== -1) editor.endCutIndex = snapIdx;
+        editor.endAnchor = [snap.latlng[0], snap.latlng[1]];
       }
-
       editorRedraw(editor);
     });
   }
@@ -788,8 +791,19 @@ function getActiveTrimmedPolyline(editor) {
 
   if (flat.length === 0) return [];
 
-  let start = editor.startCutIndex || 0;
-  let end = editor.endCutIndex !== null && editor.endCutIndex !== undefined ? editor.endCutIndex : flat.length - 1;
+  // Look up each anchor's position in THIS chained ordering fresh, every
+  // time -- never trust a previously-stored index, since
+  // chainSegmentsFromStart() can reorder and reverse segments on every
+  // call. A coordinate is a stable identity across re-chaining; an array
+  // index computed against a different ordering is not.
+  const findAnchorIndex = (anchor, fallback) => {
+    if (!anchor) return fallback;
+    const idx = flat.findIndex((p) => p[0] === anchor[0] && p[1] === anchor[1]);
+    return idx === -1 ? fallback : idx;
+  };
+
+  let start = findAnchorIndex(editor.startAnchor, 0);
+  let end = findAnchorIndex(editor.endAnchor, flat.length - 1);
 
   if (start > end) {
     const temp = start;
@@ -815,7 +829,7 @@ function editorClick(editor, latlng) {
     }
 
     editor.segments[editor.segments.length - 1].push(targetPoint);
-    editor.endCutIndex = null;
+    editor.endAnchor = null;
     editorRedraw(editor);
   } else if (editor.mode === "eraser") {
     editorEraseNear(editor, latlng);
@@ -843,8 +857,8 @@ function editorEraseNear(editor, latlng) {
     if (current.length >= 2) newSegments.push(current);
   });
   editor.segments = newSegments;
-  editor.startCutIndex = 0;
-  editor.endCutIndex = null;
+  editor.startAnchor = null;
+  editor.endAnchor = null;
   editorRedraw(editor);
 }
 
@@ -853,16 +867,16 @@ function editorUndo(editor) {
   const last = editor.segments[editor.segments.length - 1];
   last.pop();
   if (last.length === 0) editor.segments.pop();
-  editor.startCutIndex = 0;
-  editor.endCutIndex = null;
+  editor.startAnchor = null;
+  editor.endAnchor = null;
   editorRedraw(editor);
 }
 
 function editorClear(editor) {
   editor.segments = [];
   editor.freshSegment = true;
-  editor.startCutIndex = 0;
-  editor.endCutIndex = null;
+  editor.startAnchor = null;
+  editor.endAnchor = null;
   editorRedraw(editor);
 }
 
@@ -870,8 +884,8 @@ function editorAddSegments(editor, geometry) {
   if (!geometry) return;
   geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
   editor.freshSegment = true;
-  editor.startCutIndex = 0;
-  editor.endCutIndex = null;
+  editor.startAnchor = null;
+  editor.endAnchor = null;
   editorRedraw(editor);
   const allPts = editor.segments.flat();
   if (allPts.length) {
