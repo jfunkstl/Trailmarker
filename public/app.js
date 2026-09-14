@@ -329,6 +329,26 @@ document.querySelectorAll(".nav-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
+// ---------- theme toggle (Contour design system: light "Daylight" / dark "Night Hike") ----------
+// The actual light/dark values live in style.css as CSS custom properties
+// flipped by the presence of the .dark class on <html> -- this just toggles
+// that class and persists the choice, matching the same localStorage
+// pattern already used for hikes/wishlist elsewhere in this file. The
+// initial class (before this script even runs) is set by a tiny inline
+// script at the very top of index.html, so there's no light-flash on load.
+const themeToggleBtn = document.getElementById("themeToggleBtn");
+const themeToggleIcon = document.getElementById("themeToggleIcon");
+const THEME_KEY = "trailmark-theme";
+function applyThemeIcon() {
+  themeToggleIcon.textContent = document.documentElement.classList.contains("dark") ? "☀️" : "🌙";
+}
+applyThemeIcon();
+themeToggleBtn.addEventListener("click", () => {
+  const isDark = document.documentElement.classList.toggle("dark");
+  localStorage.setItem(THEME_KEY, isDark ? "dark" : "light");
+  applyThemeIcon();
+});
+
 // ---------- modal ----------
 const modalOverlay = document.getElementById("modalOverlay");
 const modalTitle = document.getElementById("modalTitle");
@@ -443,7 +463,7 @@ function selectTrailToFollow(id) {
       const group = L.layerGroup();
       followedTrail.geometry.forEach((seg) => {
         if (seg.length < 2) return;
-        L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(group);
+        L.polyline(seg, { color: "#2F5233", weight: 4 }).addTo(group);
         seg.forEach((pt) => bounds.push(pt));
       });
       routeLine = group.addTo(map);
@@ -587,7 +607,7 @@ const endIcon = L.divIcon({
 const startEndSplitIcon = L.divIcon({
   html: `
     <svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter: drop-shadow(0px 2px 4px rgba(0,0,0,0.4));">
-      <circle cx="14" cy="14" r="12" fill="white" stroke="#1B4332" stroke-width="2"/>
+      <circle cx="14" cy="14" r="12" fill="white" stroke="#2F5233" stroke-width="2"/>
       <path d="M 14 2 A 12 12 0 0 0 14 26 Z" fill="#22C55E"/>
       <path d="M 14 2 A 12 12 0 0 1 14 26 Z" fill="#3B82F6"/>
     </svg>
@@ -707,7 +727,7 @@ function editorRedraw(editor) {
   editor.segments = mergeTopology(editor.segments);
 
   if (!editor.polylineLayer) {
-    editor.polylineLayer = L.polyline(editor.segments, { color: "#1B4332", weight: 5 }).addTo(editor.map);
+    editor.polylineLayer = L.polyline(editor.segments, { color: "#2F5233", weight: 5 }).addTo(editor.map);
   } else {
     editor.polylineLayer.setLatLngs(editor.segments);
   }
@@ -720,7 +740,7 @@ function editorRedraw(editor) {
         radius: isEndpoint ? 6 : 4,
         color: "#ffffff",
         weight: 2,
-        fillColor: "#1B4332",
+        fillColor: "#2F5233",
         fillOpacity: 1,
       }).addTo(editor.markerGroup);
     });
@@ -1099,7 +1119,7 @@ function renderJournal() {
     return;
   }
   list.innerHTML = hikes.map((h) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
+    <div class="relative bg-card border border-line rounded-2xl trail-card p-4">
       <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-hike="${h.id}" aria-label="Delete hike">✕</button>
       <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${fmtDate(h.date)}</p>
       <h3>${escapeHtml(h.name)}</h3>
@@ -1207,7 +1227,7 @@ function renderSearchResults(trails) {
     return;
   }
   el.innerHTML = filtered.map((t, i) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
+    <div class="relative bg-card border border-line rounded-2xl trail-card p-4">
       <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(t.state)}${t.segments > 1 ? ` · ${t.segments} mapped segments` : ""}</p>
       <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-idx="${i}">${escapeHtml(t.name)}</h3>
       <div class="flex flex-wrap gap-2 my-2">
@@ -1245,7 +1265,7 @@ function renderRecConsResults(areas) {
     return;
   }
   el.innerHTML = areas.map((a, i) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
+    <div class="relative bg-card border border-line rounded-2xl trail-card p-4">
       <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(a.state)}</p>
       <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-rc-detail-idx="${i}">${escapeHtml(a.name)}</h3>
       <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(a.kind)}</span></div>
@@ -1278,7 +1298,7 @@ function renderParkResults(parks) {
     return;
   }
   el.innerHTML = parks.map((p, i) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
+    <div class="relative bg-card border border-line rounded-2xl trail-card p-4">
       <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(p.state)}</p>
       <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-park-detail-idx="${i}">${escapeHtml(p.name)}</h3>
       <div class="flex flex-wrap gap-2 my-2"><span class="inline-block bg-chipbg rounded-full px-2.5 py-1 text-xs font-medium">${escapeHtml(p.kind)}</span></div>
@@ -1386,7 +1406,7 @@ async function loadParkAlerts(park) {
     const data = await resp.json();
     if (data.available && data.alerts && data.alerts.length) {
       document.getElementById("parkAlerts").innerHTML = data.alerts.map((a) => `
-        <div class="bg-[#F3DCC4] text-[#8a5a10] rounded-xl px-3 py-2 text-sm mb-2">
+        <div class="bg-band text-ink rounded-xl px-3 py-2 text-sm mb-2">
           <strong>${escapeHtml(a.title)}</strong>
           <p class="text-xs mt-0.5">${escapeHtml(a.description)}</p>
         </div>
@@ -1410,7 +1430,7 @@ function openTrailMapModal(trail) {
     const bounds = [];
     trail.geometry.forEach((seg) => {
       if (seg.length < 2) return;
-      L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+      L.polyline(seg, { color: "#2F5233", weight: 4 }).addTo(map);
       seg.forEach((pt) => bounds.push(pt));
     });
     if (bounds.length) map.fitBounds(bounds, { padding: [20, 20] });
@@ -1699,7 +1719,7 @@ function openTrailDetail(trail) {
       const bounds = [];
       trail.geometry.forEach((seg) => {
         if (seg.length < 2) return;
-        L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+        L.polyline(seg, { color: "#2F5233", weight: 4 }).addTo(map);
         seg.forEach((pt) => bounds.push(pt));
       });
       if (bounds.length) map.fitBounds(bounds, { padding: [10, 10] });
@@ -1767,7 +1787,7 @@ function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceS
       c.stroke();
       c.beginPath();
       c.arc(point.x, point.y, 5, 0, Math.PI * 2);
-      c.fillStyle = "#1B4332";
+      c.fillStyle = "#2F5233";
       c.fill();
       c.restore();
     },
@@ -1779,7 +1799,7 @@ function buildElevationChart(canvasId, readoutId, sampled, elevations, instanceS
       labels: sampled.map((s) => s.mi.toFixed(2)),
       datasets: [{
         data: elevations,
-        borderColor: "#1B4332",
+        borderColor: "#2F5233",
         backgroundColor: gradient,
         fill: true,
         tension: 0.35,
@@ -1842,7 +1862,7 @@ function openElevationModal() {
     const bounds = [];
     (geometry || []).forEach((seg) => {
       if (seg.length < 2) return;
-      L.polyline(seg, { color: "#1B4332", weight: 4 }).addTo(map);
+      L.polyline(seg, { color: "#2F5233", weight: 4 }).addTo(map);
       seg.forEach((pt) => bounds.push(pt));
     });
     if (bounds.length) map.fitBounds(bounds, { padding: [16, 16] });
@@ -2088,7 +2108,7 @@ function renderSaved() {
     return;
   }
   el.innerHTML = wishlist.map((w) => `
-    <div class="relative bg-card border border-line rounded-2xl p-4">
+    <div class="relative bg-card border border-line rounded-2xl trail-card p-4">
       <button class="absolute top-3 right-3 w-7 h-7 rounded-full bg-chipbg flex items-center justify-center text-sm z-10" data-delete-wish="${w.id}" aria-label="Remove">✕</button>
       <h3 class="font-display text-lg cursor-pointer underline decoration-line underline-offset-4 block" data-detail-wish="${w.id}">${escapeHtml(w.name)}</h3>
       <p class="font-condensed text-xs uppercase tracking-wide opacity-60">${escapeHtml(w.location || "")}</p>
@@ -2512,7 +2532,7 @@ async function fetchExplorePins() {
 
     trails.forEach((t) => {
       L.circleMarker([t.lat, t.lon], {
-        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#1B4332", fillOpacity: 0.9,
+        radius: 6, color: "#ffffff", weight: 1.5, fillColor: "#2F5233", fillOpacity: 0.9,
       }).on("click", () => openExplorePinDetail(t, "trail")).addTo(exploreMarkersLayer);
     });
     parks.forEach((p) => {
