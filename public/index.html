@@ -1,333 +1,341 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <!-- TRAILSEEKER BUILD MARKER: 2026-08-14-mappins-01 -->
-  <!--
-    Diagnostic banner + build marker. Deliberately the very first script in
-    the document so it registers error listeners before ANY other script
-    (Tailwind CDN, Leaflet, Chart.js, app.js) can fail. If app.js has a
-    syntax error, the browser can't run a single line of it -- including
-    any try/catch inside app.js itself -- so the only way to ever see that
-    failure is a listener that was already attached before app.js loaded.
-    This is that listener. It has zero dependency on Tailwind or any other
-    script: all styling here is plain inline CSS.
-  -->
-  <script>
-    console.log("TRAILSEEKER BUILD MARKER: 2026-08-14-mappins-01");
-    (function () {
-      var shown = false;
-      function showBanner(message) {
-        var render = function () {
-          if (!shown) {
-            shown = true;
-            var banner = document.createElement("div");
-            banner.id = "ts-error-banner";
-            banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
-              "background:#b91c1c;color:#fff;font-family:monospace;font-size:12px;" +
-              "padding:8px 10px;max-height:40vh;overflow-y:auto;white-space:pre-wrap;" +
-              "word-break:break-word;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
-            banner.textContent = "TRAILSEEKER ERROR: " + message;
-            document.body.appendChild(banner);
-          } else {
-            var existing = document.getElementById("ts-error-banner");
-            if (existing) {
-              var line = document.createElement("div");
-              line.style.cssText = "border-top:1px solid rgba(255,255,255,0.3);margin-top:4px;padding-top:4px;";
-              line.textContent = message;
-              existing.appendChild(line);
-            }
-          }
-        };
-        if (document.body) render();
-        else document.addEventListener("DOMContentLoaded", render);
+<!-- TRAILSEEKER BUILD MARKER: 2026-09-13-contour-redesign-01 -->
+<!--
+Diagnostic banner + build marker. Deliberately the very first script in
+the document so it registers error listeners before ANY other script
+(Tailwind CDN, Leaflet, Chart.js, app.js) can fail. If app.js has a
+syntax error, the browser can't run a single line of it -- including
+any try/catch inside app.js itself -- so the only way to ever see that
+failure is a listener that was already attached before app.js loaded.
+This is that listener. It has zero dependency on Tailwind or any other
+script: all styling here is plain inline CSS.
+-->
+<script>
+console.log("TRAILSEEKER BUILD MARKER: 2026-09-13-contour-redesign-01");
+(function () {
+  var shown = false;
+  function showBanner(message) {
+    var render = function () {
+      if (!shown) {
+        shown = true;
+        var banner = document.createElement("div");
+        banner.id = "ts-error-banner";
+        banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;" +
+          "background:#b91c1c;color:#fff;font-family:monospace;font-size:12px;" +
+          "padding:8px 10px;max-height:40vh;overflow-y:auto;white-space:pre-wrap;" +
+          "word-break:break-word;box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+        banner.textContent = "TRAILSEEKER ERROR: " + message;
+        document.body.appendChild(banner);
+      } else {
+        var existing = document.getElementById("ts-error-banner");
+        if (existing) {
+          var line = document.createElement("div");
+          line.style.cssText = "border-top:1px solid rgba(255,255,255,0.3);margin-top:4px;padding-top:4px;";
+          line.textContent = message;
+          existing.appendChild(line);
+        }
       }
-      window.addEventListener("error", function (e) {
-        var msg = e.message || "Unknown script error";
-        if (e.filename) msg += " (" + e.filename + ":" + e.lineno + ":" + e.colno + ")";
-        showBanner(msg);
-      });
-      window.addEventListener("unhandledrejection", function (e) {
-        var reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
-        showBanner("Unhandled promise rejection: " + reason);
-      });
-    })();
-  </script>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Trailseeker</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Barlow:wght@400;500;600&family=Barlow+Condensed:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            paper: '#F2E9DC',
-            card: '#FBF6EC',
-            ink: '#2B2E4A',
-            pine: '#1B4332',
-            mustard: '#E3B23C',
-            clay: '#8a2f22',
-            line: '#D9C9AC',
-            chipbg: '#E7DBC3',
-          },
-          fontFamily: {
-            display: ['"Abril Fatface"', 'serif'],
-            condensed: ['"Barlow Condensed"', 'sans-serif'],
-            sans: ['Barlow', 'sans-serif'],
-          },
-        },
-      },
     };
-  </script>
-  <link rel="manifest" href="manifest.json" />
-  <meta name="theme-color" content="#1B4332" />
-  <link rel="stylesheet" href="style.css" />
+    if (document.body) render();
+    else document.addEventListener("DOMContentLoaded", render);
+  }
+  window.addEventListener("error", function (e) {
+    var msg = e.message || "Unknown script error";
+    if (e.filename) msg += " (" + e.filename + ":" + e.lineno + ":" + e.colno + ")";
+    showBanner(msg);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason && e.reason.message ? e.reason.message : String(e.reason);
+    showBanner("Unhandled promise rejection: " + reason);
+  });
+})();
+</script>
+<!--
+Dark mode preference applied BEFORE first paint, same reasoning as the
+diagnostic banner above: if this ran after Tailwind/app.js loaded, the
+page would flash light-mode-then-dark on every reload. Reads the same
+localStorage key app.js's toggle writes to.
+-->
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem("trailmark-theme");
+    var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    if (saved === "dark" || (!saved && prefersDark)) {
+      document.documentElement.classList.add("dark");
+    }
+  } catch (e) { /* localStorage unavailable -- default to light, non-fatal */ }
+})();
+</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Trailseeker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      colors: {
+        // Named tokens map to CSS custom properties (defined in style.css
+        // under :root and .dark) so every existing bg-pine/text-pine/
+        // bg-paper/etc. class automatically respects dark mode -- no need
+        // to touch every usage across the app.
+        paper: 'rgb(var(--color-paper) / <alpha-value>)',
+        card: 'rgb(var(--color-card) / <alpha-value>)',
+        ink: 'rgb(var(--color-ink) / <alpha-value>)',
+        pine: 'rgb(var(--color-pine) / <alpha-value>)',
+        mustard: 'rgb(var(--color-mustard) / <alpha-value>)',
+        clay: 'rgb(var(--color-clay) / <alpha-value>)',
+        line: 'rgb(var(--color-line) / <alpha-value>)',
+        chipbg: 'rgb(var(--color-chipbg) / <alpha-value>)',
+        band: 'rgb(var(--color-band) / <alpha-value>)',
+      },
+      fontFamily: {
+        display: ['"Fraunces"', 'serif'],
+        condensed: ['"IBM Plex Mono"', 'monospace'],
+        sans: ['"IBM Plex Sans"', 'sans-serif'],
+      },
+    },
+  },
+};
+</script>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#2F5233" />
+<link rel="stylesheet" href="style.css" />
 </head>
-<body class="bg-paper text-ink font-sans relative pb-6">
+<body class="bg-paper text-ink font-sans relative pb-6 min-h-screen transition-colors duration-200">
 
-  <header class="relative overflow-hidden rounded-b-[28px] px-4 pt-9 pb-7 text-center bg-gradient-to-b from-[#2B2E4A] via-[#7A5570] via-45% to-[#E3B23C]">
-    <svg class="absolute inset-0 w-full h-full" viewBox="0 0 400 140" preserveAspectRatio="none" aria-hidden="true">
-      <polygon points="0,140 0,70 60,20 120,80 170,35 230,90 280,45 340,85 400,55 400,140" fill="#6b5a7a" opacity="0.85"/>
-      <polygon points="0,140 0,95 70,50 140,105 210,60 280,110 340,75 400,100 400,140" fill="#16342a"/>
-      <g fill="#0f2a1f">
-        <path d="M30,140 L38,120 L32,120 L40,102 L34,102 L42,86 L50,102 L44,102 L52,120 L46,120 L54,140 Z"/>
-        <path d="M355,140 L363,116 L357,116 L365,96 L359,96 L367,78 L375,96 L369,96 L377,116 L371,116 L379,140 Z"/>
-        <path d="M370,140 L376,124 L372,124 L378,110 L374,110 L380,98 L386,110 L382,110 L388,124 L384,124 L390,140 Z"/>
-      </g>
-      <circle cx="335" cy="30" r="16" fill="#E3B23C" opacity="0.55"/>
-    </svg>
-    <h1 class="relative z-10 font-display text-4xl text-[#FBF6EC]" style="text-shadow:0 2px 10px rgba(0,0,0,0.35)">TRAILSEEKER</h1>
-    <p class="relative z-10 font-condensed uppercase tracking-[0.25em] text-xs text-[#F2E9DC] mt-1.5">Seek your next adventure</p>
-  </header>
-
-  <nav class="sticky top-0 z-10 flex max-w-xl mx-auto bg-paper border-b border-line">
-    <button class="nav-btn active flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="explore">
-      <span class="text-lg">🗺️</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Discover</span>
-    </button>
-    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="discover">
-      <span class="text-lg">🔎</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Search</span>
-    </button>
-    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="create">
-      <span class="text-lg">✏️</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Create</span>
-    </button>
-    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="track">
-      <span class="text-lg">🧭</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Track</span>
-    </button>
-    <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="journal">
-      <span class="text-lg">📓</span><span class="font-condensed uppercase text-[0.7rem] font-semibold tracking-wide">Journal</span>
-    </button>
-  </nav>
-
-  <main class="relative z-[1] max-w-xl mx-auto px-4 pt-4 pb-10">
-    <p class="font-condensed text-xs uppercase tracking-wide opacity-60 text-center mb-3" id="statLine"></p>
-
-    <!-- DISCOVER -->
-    <section id="tab-discover">
-      <div class="flex items-center justify-between mb-4">
-        <div class="flex items-center gap-2">
-          <button id="discoverBackToMapBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5 hover:bg-pine hover:text-white transition">← Map</button>
-          <h2 class="font-display text-2xl">Search</h2>
-        </div>
-        <div class="flex bg-chipbg rounded-full p-0.5" id="viewToggle">
-          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="search">Search</button>
-          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="saved">Saved</button>
-        </div>
-      </div>
-
-      <div id="discoverSearch">
-        <div class="segmented-small flex w-fit bg-chipbg rounded-full p-0.5 mb-2.5" id="searchModeToggle">
-          <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="name">Trail name</button>
-          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="city">City</button>
-          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="parks">Parks</button>
-          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="reccons">Rec/Cons</button>
-          <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="usa">USA</button>
-        </div>
-        <div class="flex gap-2 mb-3">
-          <input id="query" type="text" placeholder="Search trail name (optional)" class="flex-1 min-w-0 rounded-full border border-line bg-card px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40" />
-          <select id="state" class="rounded-full border border-line bg-card px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40"></select>
-        </div>
-        <button id="searchBtn" class="w-full rounded-full bg-pine text-white font-condensed font-semibold uppercase tracking-wide py-2.5 mb-3 hover:opacity-90 active:scale-[0.98] transition disabled:opacity-50">Search</button>
-        <div class="flex flex-wrap gap-2 mb-3" id="difficultyFilters">
-          <button class="chip active px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="All">All</button>
-          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Easy">Easy</button>
-          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Moderate">Moderate</button>
-          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Strenuous">Strenuous</button>
-          <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Unknown">Unrated</button>
-        </div>
-        <p id="status" class="text-sm opacity-70 mb-3">Pick a state and search to load live trail data.</p>
-        <div id="results" class="flex flex-col gap-3"></div>
-      </div>
-
-      <div id="discoverSaved" class="hidden">
-        <div id="savedList" class="flex flex-col gap-3"></div>
-      </div>
-    </section>
-
-    <!-- CREATE -->
-    <section id="tab-create" class="hidden">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="font-display text-2xl">Create</h2>
-        <div class="flex items-center gap-2">
-          <button id="createAddSavedBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
-          <button id="createEraserModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
-          <button id="createPencilModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
-        </div>
-      </div>
-
-      <label class="block mb-3">
-        <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Start from</span>
-        <select id="createBasePicker" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2.5 text-sm">
-          <option value="">Freestyle (blank map)</option>
-        </select>
-      </label>
-
-      <p class="text-sm opacity-70 mb-2" id="createHint">Tap the map to add points to your route.</p>
-
-      <div id="createMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
-        <div id="createMap" class="w-full h-[360px] bg-card"></div>
-      </div>
-
-      <div class="flex gap-2.5 mt-3.5">
-        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
-          <span class="block font-condensed font-bold text-xl text-pine" id="createDistance">0 m</span>
-          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Distance</span>
-        </div>
-        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
-          <span class="block font-condensed font-bold text-xl text-pine" id="createPointCount">0</span>
-          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Points</span>
-        </div>
-      </div>
-
-      <div class="flex gap-2 mt-3.5 flex-wrap">
-        <button id="createUndoBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Undo point</button>
-        <button id="createClearBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition">Clear</button>
-        <button id="createSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition">Save route</button>
-      </div>
-      <p class="text-xs opacity-60 mt-3">Draw a route by tapping the map, or pick a saved trail above to extend it. Save it and it'll show up in Track and your Saved list, just like any other trail.</p>
-    </section>
-
-    <!-- TRACK -->
-    <section id="tab-track" class="hidden">
-      <h2 class="font-display text-2xl mb-4">Track</h2>
-
-      <label class="block mb-3">
-        <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Following</span>
-        <select id="trailPicker" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2.5 text-sm">
-          <option value="">Freestyle (no saved route)</option>
-        </select>
-      </label>
-      <button id="trackOfflineBtn" class="hidden rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:bg-pine hover:text-white transition mb-3">Download map for offline</button>
-
-      <div class="flex items-center gap-4 bg-card border border-line rounded-[20px] px-4 py-3.5">
-        <button id="trackBtn" class="record-btn shrink-0 w-[60px] h-[60px] rounded-full bg-mustard text-white text-xl shadow-lg active:scale-95 transition" aria-label="Start tracking">
-          <span id="trackBtnIcon">▶</span>
-        </button>
-        <div class="flex-1 text-left">
-          <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1" id="trackState">Ready when you are</p>
-          <div class="flex items-baseline gap-3.5">
-            <span class="font-condensed text-3xl font-semibold" id="timerDisplay">0:00</span>
-            <span class="font-condensed text-lg text-pine" id="distanceDisplay">0 m</span>
-          </div>
-        </div>
-      </div>
-      <p class="gps-note hidden text-sm bg-[#F3DCC4] text-[#8a5a10] rounded-lg px-3 py-2 mt-2.5" id="gpsNote"></p>
-
-      <div class="rounded-2xl overflow-hidden border border-line mt-4" id="trackMapWrap">
-        <div id="trackMap" class="w-full h-[320px] bg-card"></div>
-      </div>
-
-      <div class="flex gap-2.5 mt-3.5">
-        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
-          <span class="block font-condensed font-bold text-xl text-pine" id="statDistance">0 m</span>
-          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Distance</span>
-        </div>
-        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
-          <span class="block font-condensed font-bold text-xl text-pine" id="statTime">0:00</span>
-          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Time</span>
-        </div>
-        <div class="flex-1 bg-card border border-line rounded-2xl py-3 px-2 text-center">
-          <span class="block font-condensed font-bold text-xl text-pine" id="statCalories">0</span>
-          <span class="font-condensed text-[0.65rem] uppercase tracking-wide opacity-65">Calories (approx.)</span>
-        </div>
-      </div>
-      <p class="text-xs opacity-60 mt-3">Uses your device's location to trace the route and measure distance as you walk. Calorie estimate is a general approximation, not personalized.</p>
-    </section>
-
-    <!-- JOURNAL -->
-    <section id="tab-journal" class="hidden">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="font-display text-2xl">Journal</h2>
-        <button id="addHikeBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90">+ Add</button>
-      </div>
-      <div id="journalList" class="flex flex-col gap-3"></div>
-    </section>
-
-    <!-- EXPLORE (map-first prototype, step 2: live pins from /api/map-pins) -->
-    <!-- EXPLORE (map-first prototype, step 3: floating status pill over the map) -->
-    <section id="tab-explore" class="hidden">
-      <h2 class="font-display text-2xl mb-4">Map (prototype)</h2>
-      <div id="exploreMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
-        <div id="exploreMap" class="w-full h-[70vh] bg-card"></div>
-        <!--
-          Floating status pill, overlaid on top of the map itself rather than
-          living in the normal page flow below it. z-[1200] matches the same
-          threshold already used elsewhere in this app for overlay UI that
-          needs to sit above Leaflet's internal panes/controls (which can
-          reach up to ~1000) -- same id as before, so app.js needs no change.
-        -->
-        <div class="absolute top-3 left-3 z-[1200] bg-card border border-line rounded-full px-4 py-2 shadow-md max-w-[62%] text-center">
-          <span class="text-sm font-condensed" id="exploreStatus">Loading…</span>
-        </div>
-        <!-- Floating Weather button, top-right -- UI only for now, actual forecast logic is the next step. -->
-        <button id="exploreWeatherBtn" class="absolute top-3 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Weather forecast">🌤</button>
-        <!-- Floating locate/recenter button, top-right, directly beneath Weather (its final position). -->
-        <button id="exploreLocateBtn" class="absolute top-16 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Find my location">📍</button>
-        <!-- Floating bottom-left toolbar: Search, Create, Track, Journal -- each button just calls the exact same switchTab() the traditional nav bar already uses. No new navigation logic here, just new buttons wired to existing functions. -->
-        <div class="absolute bottom-4 left-4 z-[1200] flex gap-2">
-          <button id="exploreSearchBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Search trails and parks">🔎</button>
-          <button id="exploreCreateBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Create a route">✏️</button>
-          <button id="exploreTrackBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Track a hike">🧭</button>
-          <button id="exploreJournalBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Journal">📓</button>
-        </div>
-        <!-- Floating "List" button, bottom-right. Shows what's currently loaded on the map as a scrollable list, matching the reference app's List view. -->
-        <button id="exploreListBtn" class="absolute bottom-4 right-4 z-[1200] bg-card border border-line rounded-full px-4 py-2.5 shadow-md flex items-center gap-1.5 font-condensed font-semibold uppercase text-xs tracking-wide" aria-label="Show list view">📋 List</button>
-      </div>
-      <p class="text-xs opacity-60 mt-3">Temporary test view for the upcoming map-first Discover redesign. Pan and zoom to load trails, parks, and protected areas. Nothing here is final, and Discover is untouched.</p>
-    </section>
-  </main>
-
-  <div id="modalOverlay" class="hidden fixed inset-0 z-[110] bg-black/40 flex items-end sm:items-center justify-center">
-    <div id="modalPanel" class="bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="font-display text-xl" id="modalTitle">Save this hike</h3>
-        <div class="flex items-center gap-2">
-          <button id="modalEditAdd" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
-          <button id="modalEditEraser" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
-          <button id="modalEditPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
-          <button id="modalPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
-          <button id="modalMaximize" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">⤢</button>
-          <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
-        </div>
-      </div>
-      <div id="modalBody"></div>
-    </div>
+<header class="relative px-5 pt-8 pb-6 flex items-start justify-between">
+  <div>
+    <h1 class="font-display text-4xl font-semibold tracking-tight text-ink">TRAILSEEKER</h1>
+    <p class="font-condensed uppercase tracking-[0.15em] text-[0.65rem] text-ink opacity-60 mt-1.5">Seek your next adventure</p>
   </div>
+  <button id="themeToggleBtn" class="w-11 h-11 rounded-full border border-line flex items-center justify-center text-lg shrink-0 mt-1 bg-card" aria-label="Toggle dark mode">
+    <span id="themeToggleIcon">🌓</span>
+  </button>
+</header>
 
-  <div id="toast" class="hidden fixed bottom-8 left-1/2 -translate-x-1/2 bg-ink text-white px-4.5 py-2 rounded-full text-sm font-condensed tracking-wide z-[60]"></div>
+<div class="contour-rule mx-5 mb-2 text-pine"></div>
 
-  <div id="trailDetailOverlay" class="hidden fixed inset-0 z-[100] bg-paper overflow-y-auto pb-10">
-    <div class="flex items-center gap-2.5 px-4 py-4 border-b border-line bg-paper sticky top-0 z-10">
-      <button id="detailBack" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">←</button>
-      <h2 class="font-display text-xl" id="detailTitle">Trail</h2>
+<nav class="sticky top-0 z-10 flex max-w-xl mx-auto bg-paper/95 backdrop-blur border-b border-line">
+  <button class="nav-btn active flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="explore">
+    <span class="text-lg">🗺️</span><span class="font-condensed uppercase text-[0.62rem] font-semibold tracking-wide">Discover</span>
+  </button>
+  <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="discover">
+    <span class="text-lg">🔎</span><span class="font-condensed uppercase text-[0.62rem] font-semibold tracking-wide">Search</span>
+  </button>
+  <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="create">
+    <span class="text-lg">✏️</span><span class="font-condensed uppercase text-[0.62rem] font-semibold tracking-wide">Create</span>
+  </button>
+  <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="track">
+    <span class="text-lg">🧭</span><span class="font-condensed uppercase text-[0.62rem] font-semibold tracking-wide">Track</span>
+  </button>
+  <button class="nav-btn flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="journal">
+    <span class="text-lg">📓</span><span class="font-condensed uppercase text-[0.62rem] font-semibold tracking-wide">Journal</span>
+  </button>
+</nav>
+
+<main class="relative z-[1] max-w-xl mx-auto px-4 pt-4 pb-10">
+  <p class="font-condensed text-xs uppercase tracking-wide opacity-60 text-center mb-3" id="statLine"></p>
+
+  <!-- DISCOVER -->
+  <section id="tab-discover">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-2">
+        <button id="discoverBackToMapBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-3 py-1.5">← Map</button>
+        <h2 class="font-display text-2xl">Search</h2>
+      </div>
+      <div class="flex bg-chipbg rounded-full p-0.5" id="viewToggle">
+        <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="search">Search</button>
+        <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-view="saved">Saved</button>
+      </div>
     </div>
-    <div id="detailBody" class="p-4 max-w-xl mx-auto"></div>
-  </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-  <script src="app.js"></script>
+    <div id="discoverSearch">
+      <div class="segmented-small flex w-fit bg-chipbg rounded-full p-0.5 mb-2.5" id="searchModeToggle">
+        <button class="seg active px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="name">Trail name</button>
+        <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="city">City</button>
+        <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="parks">Parks</button>
+        <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="reccons">Rec/Cons</button>
+        <button class="seg px-3 py-1.5 rounded-full font-condensed font-semibold uppercase text-xs" data-mode="usa">USA</button>
+      </div>
+      <div class="flex gap-2 mb-3">
+        <input id="query" type="text" placeholder="Search trail name (optional)" class="flex-1 min-w-0 rounded-full border border-line bg-card px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40" />
+        <select id="state" class="rounded-full border border-line bg-card px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-pine/40"></select>
+      </div>
+      <button id="searchBtn" class="w-full rounded-full bg-pine text-white font-condensed font-semibold uppercase tracking-wide py-2.5 mb-3 hover:opacity-90 active:scale-[0.98] transition disabled:opacity-50">Search</button>
+      <div class="flex flex-wrap gap-2 mb-3" id="difficultyFilters">
+        <button class="chip active px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="All">All</button>
+        <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Easy">Easy</button>
+        <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Moderate">Moderate</button>
+        <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Strenuous">Strenuous</button>
+        <button class="chip px-3 py-1 rounded-full border border-line text-xs font-medium" data-difficulty="Unknown">Unrated</button>
+      </div>
+      <p id="status" class="text-sm opacity-70 mb-3">Pick a state and search to load live trail data.</p>
+      <div id="results" class="flex flex-col gap-3"></div>
+    </div>
+
+    <div id="discoverSaved" class="hidden">
+      <div id="savedList" class="flex flex-col gap-3"></div>
+    </div>
+  </section>
+
+  <!-- CREATE -->
+  <section id="tab-create" class="hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-display text-2xl">Create</h2>
+      <div class="flex items-center gap-2">
+        <button id="createAddSavedBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
+        <button id="createEraserModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
+        <button id="createPencilModeBtn" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
+      </div>
+    </div>
+
+    <label class="block mb-3">
+      <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Start from</span>
+      <select id="createBasePicker" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2.5 text-sm">
+        <option value="">Freestyle (blank map)</option>
+      </select>
+    </label>
+
+    <p class="text-sm opacity-70 mb-2" id="createHint">Tap the map to add points to your route.</p>
+
+    <div id="createMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
+      <div id="createMap" class="w-full h-[360px] bg-card"></div>
+    </div>
+
+    <div class="flex gap-2.5 mt-3.5">
+      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="createDistance">0 m</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Distance</span>
+      </div>
+      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="createPointCount">0</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Points</span>
+      </div>
+    </div>
+
+    <div class="flex gap-2 mt-3.5 flex-wrap">
+      <button id="createUndoBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2">Undo point</button>
+      <button id="createClearBtn" class="rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2">Clear</button>
+      <button id="createSaveBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90 transition">Save route</button>
+    </div>
+    <p class="text-xs opacity-60 mt-3">Draw a route by tapping the map, or pick a saved trail above to extend it. Save it and it'll show up in Track and your Saved list, just like any other trail.</p>
+  </section>
+
+  <!-- TRACK -->
+  <section id="tab-track" class="hidden">
+    <h2 class="font-display text-2xl mb-4">Track</h2>
+
+    <label class="block mb-3">
+      <span class="font-condensed uppercase text-xs tracking-wide opacity-60">Following</span>
+      <select id="trailPicker" class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2.5 text-sm">
+        <option value="">Freestyle (no saved route)</option>
+      </select>
+    </label>
+    <button id="trackOfflineBtn" class="hidden rounded-full border border-pine text-pine font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 mb-3">Download map for offline</button>
+
+    <div class="flex items-center gap-4 bg-card border border-line rounded-[20px] px-4 py-3.5">
+      <button id="trackBtn" class="record-btn shrink-0 w-[60px] h-[60px] rounded-full bg-clay text-white text-xl shadow-lg active:scale-95 transition" aria-label="Start tracking">
+        <span id="trackBtnIcon">▶</span>
+      </button>
+      <div class="flex-1 text-left">
+        <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1" id="trackState">Ready when you are</p>
+        <div class="flex items-baseline gap-3.5">
+          <span class="font-condensed text-3xl font-semibold" id="timerDisplay">0:00</span>
+          <span class="font-condensed text-lg text-pine" id="distanceDisplay">0 m</span>
+        </div>
+      </div>
+    </div>
+    <p class="gps-note hidden text-sm rounded-lg px-3 py-2 mt-2.5" id="gpsNote"></p>
+
+    <div class="rounded-2xl overflow-hidden border border-line mt-4" id="trackMapWrap">
+      <div id="trackMap" class="w-full h-[320px] bg-card"></div>
+    </div>
+
+    <div class="flex gap-2.5 mt-3.5">
+      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="statDistance">0 m</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Distance</span>
+      </div>
+      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="statTime">0:00</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Time</span>
+      </div>
+      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="statCalories">0</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Calories</span>
+      </div>
+    </div>
+    <p class="text-xs opacity-60 mt-3">Uses your device's location to trace the route and measure distance as you walk. Calorie estimate is a general approximation, not personalized.</p>
+  </section>
+
+  <!-- JOURNAL -->
+  <section id="tab-journal" class="hidden">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="font-display text-2xl">Journal</h2>
+      <button id="addHikeBtn" class="rounded-full bg-pine text-white font-condensed font-semibold uppercase text-xs tracking-wide px-4 py-2 hover:opacity-90">+ Add</button>
+    </div>
+    <div id="journalList" class="flex flex-col gap-3"></div>
+  </section>
+
+  <!-- EXPLORE (map-first landing) -->
+  <section id="tab-explore" class="hidden">
+    <h2 class="font-display text-2xl mb-4">Discover</h2>
+    <div id="exploreMapWrap" class="relative rounded-2xl overflow-hidden border border-line">
+      <div id="exploreMap" class="w-full h-[70vh] bg-card"></div>
+      <div class="absolute top-3 left-3 z-[1200] bg-card border border-line rounded-full px-4 py-2 shadow-md max-w-[62%] text-center">
+        <span class="text-sm font-condensed" id="exploreStatus">Loading…</span>
+      </div>
+      <button id="exploreWeatherBtn" class="absolute top-3 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Weather forecast">🌤</button>
+      <button id="exploreLocateBtn" class="absolute top-16 right-3 z-[1200] w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Find my location">📍</button>
+      <div class="absolute bottom-4 left-4 z-[1200] flex gap-2">
+        <button id="exploreSearchBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Search trails and parks">🔎</button>
+        <button id="exploreCreateBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Create a route">✏️</button>
+        <button id="exploreTrackBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Track a hike">🧭</button>
+        <button id="exploreJournalBtn" class="w-11 h-11 rounded-full bg-card border border-line shadow-md flex items-center justify-center text-lg" aria-label="Journal">📓</button>
+      </div>
+      <button id="exploreListBtn" class="absolute bottom-4 right-4 z-[1200] bg-card border border-line rounded-full px-4 py-2.5 shadow-md flex items-center gap-1.5 font-condensed font-semibold uppercase text-xs tracking-wide" aria-label="Show list view">📋 List</button>
+    </div>
+    <p class="text-xs opacity-60 mt-3">Pan and zoom to load trails, parks, and protected areas.</p>
+  </section>
+</main>
+
+<div id="modalOverlay" class="hidden fixed inset-0 z-[110] bg-ink/40 flex items-end sm:items-center justify-center">
+  <div id="modalPanel" class="bg-paper w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl max-h-[85vh] overflow-y-auto p-5 transition-all duration-200">
+    <div class="flex items-center justify-between mb-4">
+      <h3 class="font-display text-xl" id="modalTitle">Save this hike</h3>
+      <div class="flex items-center gap-2">
+        <button id="modalEditAdd" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">+</button>
+        <button id="modalEditEraser" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">🧹</button>
+        <button id="modalEditPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
+        <button id="modalPencil" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">✏️</button>
+        <button id="modalMaximize" class="hidden w-8 h-8 rounded-full bg-chipbg flex items-center justify-center text-sm">⤢</button>
+        <button id="modalClose" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">✕</button>
+      </div>
+    </div>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<div id="toast" class="hidden fixed bottom-8 left-1/2 -translate-x-1/2 bg-ink text-paper px-4.5 py-2 rounded-full text-sm font-condensed tracking-wide z-[60]"></div>
+
+<div id="trailDetailOverlay" class="hidden fixed inset-0 z-[100] bg-paper overflow-y-auto pb-10">
+  <div class="flex items-center gap-2.5 px-4 py-4 border-b border-line bg-paper sticky top-0 z-10">
+    <button id="detailBack" class="w-8 h-8 rounded-full bg-chipbg flex items-center justify-center">←</button>
+    <h2 class="font-display text-xl" id="detailTitle">Trail</h2>
+  </div>
+  <div id="detailBody" class="p-4 max-w-xl mx-auto"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
