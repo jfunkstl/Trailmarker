@@ -1,27 +1,119 @@
-/* Tailwind (via CDN in index.html) handles almost everything now.
-   What's left here are things Tailwind's utility classes can't express:
-   JS-driven active/recording states, and the decorative treeline watermark. */
+/* =============================================================
+   Trailseeker -- "Contour" design system
+   Tailwind (via CDN in index.html) handles layout/spacing/typography
+   utilities. Everything here is what Tailwind's utility classes can't
+   express: the actual color VALUES behind the named tokens (so dark mode
+   can flip them without touching a single class anywhere else in the
+   app), the two signature shape devices (notched trail-card corners,
+   contour-line dividers), the instrument-style stat chips, and the
+   handful of JS-driven active/recording states.
+   ============================================================= */
+
+:root {
+  /* "Daylight" -- cool map-paper base, not warm cream. Values are R G B
+     triplets (no commas, no rgb() wrapper) so Tailwind's
+     rgb(var(--x) / <alpha-value>) pattern in the config can apply opacity
+     modifiers (bg-pine/50 etc.) the same way it would for any built-in
+     Tailwind color. */
+  --color-paper:   238 240 230; /* #EEF0E6 */
+  --color-card:    247 248 241; /* #F7F8F1 */
+  --color-ink:      27  36  48; /* #1B2430 */
+  --color-pine:     47  82  51; /* #2F5233 -- contour green */
+  --color-mustard:  62 110 142; /* #3E6E8E -- water blue (kept the old token name for zero app.js edits) */
+  --color-clay:    196  83  31; /* #C4531F -- trail blaze orange */
+  --color-line:    203 208 190; /* #CBD0BE */
+  --color-chipbg:  225 224 208; /* light contour-tint chip background */
+  --color-band:    220 201 163; /* #DCC9A3 -- elevation-band tan, for chips/accents */
+}
+
+.dark {
+  /* "Night Hike" -- near-navy base, luminous trail accents */
+  --color-paper:    18  24  28; /* #12181C */
+  --color-card:     27  36  42; /* #1B242A */
+  --color-ink:     233 230 220; /* #E9E6DC */
+  --color-pine:    111 191 115; /* #6FBF73 */
+  --color-mustard: 127 168 194; /* #7FA8C2 */
+  --color-clay:    232 147  74; /* #E8934A */
+  --color-line:     42  52  58; /* #2A343A */
+  --color-chipbg:   35  46  52;
+  --color-band:     58  66  56;
+}
 
 body {
   position: relative;
 }
+
+/* Faint topographic-contour watermark, replacing the old pine treeline.
+   Concentric-ish rings rather than trees -- ties directly to the map/
+   elevation concept instead of being generic decoration. Kept very low
+   opacity so it reads as texture, not noise. */
 body::before {
   content: "";
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 44px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='60' viewBox='0 0 120 60'><path fill='%231B4332' d='M20,60 L28,38 L22,38 L30,20 L24,20 L32,4 L40,20 L34,20 L42,38 L36,38 L44,60 Z'/><path fill='%231B4332' d='M70,60 L78,42 L72,42 L80,26 L74,26 L82,12 L90,26 L84,26 L92,42 L86,42 L94,60 Z'/></svg>");
-  background-repeat: repeat-x;
-  background-position: bottom;
-  background-size: 120px 44px;
-  opacity: 0.06;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 15% 20%, transparent 0 38px, rgb(var(--color-pine)) 38px 40px, transparent 40px),
+    radial-gradient(circle at 15% 20%, transparent 0 62px, rgb(var(--color-pine)) 62px 64px, transparent 64px),
+    radial-gradient(circle at 85% 75%, transparent 0 46px, rgb(var(--color-pine)) 46px 48px, transparent 48px),
+    radial-gradient(circle at 85% 75%, transparent 0 70px, rgb(var(--color-pine)) 70px 72px, transparent 72px);
+  opacity: 0.05;
   pointer-events: none;
   z-index: 0;
 }
 
-.seg.active { background: #1B4332; color: #fff; }
-.chip.active { background: #1B4332; color: #fff; border-color: #1B4332; }
-.nav-btn.active { color: #8a2f22; }
-.record-btn.recording { background: #8a2f22; }
+/* ---------- Signature shape 1: trail-marker card ----------
+   One clipped corner, like a trail-blaze placard or luggage tag, instead
+   of uniform rounded-2xl on every card. Applied specifically to list/
+   result cards (search results, saved trails, journal entries) via this
+   class alongside the existing rounded-2xl -- the clip-path only touches
+   the top-right corner, so rounded-2xl still governs the other three. */
+.trail-card {
+  clip-path: polygon(0 0, calc(100% - 26px) 0, 100% 26px, 100% 100%, 0 100%);
+}
+
+/* ---------- Signature shape 2: contour-line divider ----------
+   A repeating thin-line rule standing in for a plain border, literally
+   the elevation-contour motif doing double duty as page structure.
+   Color is set via a text-color utility class in the markup (e.g.
+   class="contour-rule text-pine") so it can vary by context. */
+.contour-rule {
+  height: 8px;
+  background-image: repeating-linear-gradient(90deg, currentColor 0 12px, transparent 12px 20px);
+  opacity: 0.4;
+}
+
+/* ---------- Instrument-style stat chip ----------
+   Distance/elevation/time readouts get a dark "device screen" treatment
+   regardless of light/dark mode -- like glancing at a GPS altimeter,
+   not just another stat card matching the page background. */
+.instrument-chip {
+  background: rgb(var(--color-ink));
+  color: rgb(var(--color-paper));
+  font-variant-numeric: tabular-nums;
+}
+.dark .instrument-chip {
+  background: rgb(var(--color-card));
+  color: rgb(var(--color-ink));
+  border: 1px solid rgb(var(--color-line));
+}
+
+/* ---------- Warning note (GPS unavailable, etc.) ----------
+   Warm elevation-band tint instead of a hardcoded hex color, so it also
+   adapts correctly in dark mode. */
+.gps-note {
+  background: rgb(var(--color-band));
+  color: rgb(var(--color-ink));
+}
+
+/* ---------- Active/recording states (JS-driven, can't be expressed as
+   static Tailwind utility classes since they toggle at runtime) ---------- */
+.seg.active { background: rgb(var(--color-pine)); color: rgb(var(--color-paper)); }
+.chip.active { background: rgb(var(--color-pine)); color: rgb(var(--color-paper)); border-color: rgb(var(--color-pine)); }
+.nav-btn.active { color: rgb(var(--color-clay)); }
+.record-btn.recording { background: rgb(var(--color-clay)); }
+
+/* Smooth color-scheme transitions when the theme toggle fires, without
+   making every hover/press interaction feel sluggish. */
+button, a, input, select {
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
