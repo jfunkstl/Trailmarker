@@ -1452,6 +1452,86 @@ async function fetchCotrexTrails(swLat, swLon, neLat, neLon) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Missouri MDC (Missouri Department of Conservation) integration -- same
+// gap-filling role as Colorado's COTREX above, for Missouri specifically.
+//
+// Endpoint, field names, and geometry type verified directly against the
+// live ArcGIS REST Services Directory before writing this. An initial
+// guessed service name (MO_Missouri_Department_of_Conservation_Trails,
+// found via a stale open-data catalog listing) does not actually exist and
+// returned "Invalid URL" -- the real, live service (confirmed via the
+// org's own full service directory) is MO_MDC_Trails under org
+// kNS2ppBA4rwAQQZy. Verify, never guess. Confirmed fields via a live
+// sample record: Trail_Name, Area_Name, Miles, Biking, Equestrian, ADA.
+// Geometry type is esriGeometryPolyline. Native spatial reference is Web
+// Mercator (102100), so outSR=4326 is required to get plain lat/lon back,
+// same as COTREX.
+//
+// The same sample record showed a blank Trail_Name but a populated
+// Area_Name -- rather than silently dropping trails like that, they're
+// grouped and shown under the conservation area's name instead, since
+// that's still meaningfully identifying and better than losing real trail
+// mileage entirely.
+// ---------------------------------------------------------------------------
+const MDC_TRAILS_URL = "https://services2.arcgis.com/kNS2ppBA4rwAQQZy/ArcGIS/rest/services/MO_MDC_Trails/FeatureServer/0/query";
+// Missouri's approximate statewide extent -- used to skip querying this
+// endpoint entirely for viewports that don't overlap Missouri at all.
+const MISSOURI_BOUNDS = { swLat: 35.9, swLon: -95.9, neLat: 40.7, neLon: -89.0 };
+function boundsOverlapMissouri(swLat, swLon, neLat, neLon) {
+  return swLat <= MISSOURI_BOUNDS.neLat && neLat >= MISSOURI_BOUNDS.swLat &&
+    swLon <= MISSOURI_BOUNDS.neLon && neLon >= MISSOURI_BOUNDS.swLon;
+}
+
+async function fetchMdcTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapMissouri(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`; // esriGeometryEnvelope order: xmin(lon),ymin(lat),xmax(lon),ymax(lat)
+  const url = `${MDC_TRAILS_URL}?geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=Trail_Name,Area_Name,Miles&outSR=4326&f=geojson`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`MDC trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    const features = data.features || [];
+    const byName = new Map();
+    features.forEach((f) => {
+      const props = f.properties || {};
+      const trailName = (props.Trail_Name || "").trim();
+      const areaName = (props.Area_Name || "").trim();
+      const name = trailName || areaName; // fall back to the conservation area's name when the trail record itself has none
+      const geom = f.geometry;
+      if (!name || !geom) return;
+      // GeoJSON LineString/MultiLineString coords are [lon,lat] -- flip to [lat,lon].
+      const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+      const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+      if (segCoordsList.length === 0) return;
+      const lenKm = (Number(props.Miles) || 0) * 1.60934;
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: "Unknown", // MDC has no difficulty-rating field equivalent to OSM's sac_scale
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values());
+  } catch (err) {
+    console.error("MDC trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // Runs one Overpass query scoped to exactly the given bounds and returns
 // the parsed { trails, parks, areas } for that area alone. Extracted out of
 // the route handler so it can be called once per still-uncached grid cell,
@@ -1555,6 +1635,15 @@ out tags center;`.trim();
     cotrexTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
   } catch (cotrexErr) {
     console.error("COTREX merge (map-pins) failed:", cotrexErr.message || cotrexErr);
+  }
+
+  // Merge in Missouri's official MDC trail data, same gap-filling role as
+  // COTREX above, for Missouri specifically.
+  try {
+    const mdcTrails = await fetchMdcTrails(swLat, swLon, neLat, neLon);
+    mdcTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (mdcErr) {
+    console.error("MDC merge (map-pins) failed:", mdcErr.message || mdcErr);
   }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
