@@ -245,6 +245,9 @@ tailwind.config = {
       <button id="trackBtn" class="record-btn shrink-0 w-[60px] h-[60px] rounded-full bg-clay text-white text-xl shadow-lg active:scale-95 transition" aria-label="Start tracking">
         <span id="trackBtnIcon">▶</span>
       </button>
+      <button id="pauseBtn" class="hidden shrink-0 w-11 h-11 rounded-full border-2 border-pine text-pine text-lg active:scale-95 transition" aria-label="Pause tracking">
+        <span id="pauseBtnIcon">⏸</span>
+      </button>
       <div class="flex-1 text-left">
         <p class="font-condensed uppercase tracking-wide text-xs opacity-60 mb-1" id="trackState">Ready when you are</p>
         <div class="flex items-baseline gap-3.5">
@@ -259,16 +262,20 @@ tailwind.config = {
       <div id="trackMap" class="w-full h-[320px] bg-card"></div>
     </div>
 
-    <div class="flex gap-2.5 mt-3.5">
-      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+    <div class="grid grid-cols-2 gap-2.5 mt-3.5">
+      <div class="instrument-chip rounded-xl py-3 px-2 text-center">
         <span class="block font-condensed text-xl font-semibold" id="statDistance">0 m</span>
         <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Distance</span>
       </div>
-      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+      <div class="instrument-chip rounded-xl py-3 px-2 text-center">
+        <span class="block font-condensed text-xl font-semibold" id="statElevation">+0 ft</span>
+        <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Elevation</span>
+      </div>
+      <div class="instrument-chip rounded-xl py-3 px-2 text-center">
         <span class="block font-condensed text-xl font-semibold" id="statTime">0:00</span>
         <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Time</span>
       </div>
-      <div class="flex-1 instrument-chip rounded-xl py-3 px-2 text-center">
+      <div class="instrument-chip rounded-xl py-3 px-2 text-center">
         <span class="block font-condensed text-xl font-semibold" id="statCalories">0</span>
         <span class="font-condensed text-[0.6rem] uppercase tracking-wide opacity-70">Calories</span>
       </div>
