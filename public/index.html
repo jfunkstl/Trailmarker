@@ -121,7 +121,44 @@ tailwind.config = {
   </button>
 </header>
 
-<div class="contour-rule mx-5 mb-2 text-pine"></div>
+<div class="hiker-track mx-5 mb-2 text-pine">
+  <div class="hiker" aria-hidden="true">
+    <svg viewBox="0 0 36 46" xmlns="http://www.w3.org/2000/svg">
+      <!-- backpack (behind body) -->
+      <rect class="hk-pack" x="7" y="20" width="8" height="12" rx="3.5"/>
+      <!-- walking pose: swinging legs + arms -->
+      <g class="hk-walk">
+        <g class="hk-leg-b"><path class="hk-limb" d="M18 31 L18 42"/><ellipse class="hk-boot" cx="19.5" cy="43.5" rx="3.6" ry="2"/></g>
+        <g class="hk-leg-a"><path class="hk-limb" d="M18 31 L18 42"/><ellipse class="hk-boot" cx="19.5" cy="43.5" rx="3.6" ry="2"/></g>
+      </g>
+      <!-- standing / looking pose: planted legs, one arm hanging -->
+      <g class="hk-look">
+        <path class="hk-limb" d="M16 31 L15.5 42"/><ellipse class="hk-boot" cx="17" cy="43.5" rx="3.6" ry="2"/>
+        <path class="hk-limb" d="M20 31 L21 42"/><ellipse class="hk-boot" cx="22.5" cy="43.5" rx="3.6" ry="2"/>
+      </g>
+      <!-- torso -->
+      <rect class="hk-shirt" x="12.5" y="19" width="11" height="13.5" rx="4.5"/>
+      <!-- back arm swing (behind) -->
+      <g class="hk-walk"><g class="hk-arm-b"><path class="hk-sleeve" d="M18 22.5 L18 30"/><circle class="hk-skin" cx="18" cy="31" r="1.9"/></g></g>
+      <!-- head: face, hat, and the shading hand -->
+      <g class="hk-head">
+        <circle class="hk-skin" cx="18" cy="11.5" r="7"/>
+        <circle class="hk-eye" cx="21.5" cy="12" r="1.2"/>
+        <path d="M19.5 15 Q21.5 16.8 23.5 15" fill="none" stroke="#8a4b2d" stroke-width="1" stroke-linecap="round"/>
+        <ellipse class="hk-hat" cx="18" cy="6.8" rx="10.5" ry="2.6"/>
+        <path class="hk-hat" d="M11.2 6.8 a6.8 6 0 0 1 13.6 0 z"/>
+        <g class="hk-look"><circle class="hk-skin" cx="25" cy="9.6" r="2"/></g>
+      </g>
+      <!-- front arm: swings when walking, raised to the brim when looking -->
+      <g class="hk-walk"><g class="hk-arm-a"><path class="hk-sleeve" d="M18 22.5 L18 30"/><circle class="hk-skin" cx="18" cy="31" r="1.9"/></g></g>
+      <g class="hk-look">
+        <path class="hk-sleeve" d="M18 22.5 L18 30"/><circle class="hk-skin" cx="18" cy="31" r="1.9"/>
+        <path class="hk-sleeve" d="M19 22.5 L25.5 19 L25 10.5"/>
+      </g>
+    </svg>
+  </div>
+  <div class="contour-rule"></div>
+</div>
 
 <nav class="sticky top-0 z-10 flex max-w-xl mx-auto bg-paper/95 backdrop-blur border-b border-line">
   <button class="nav-btn active flex-1 flex flex-col items-center gap-0.5 py-2.5" data-tab="explore">
