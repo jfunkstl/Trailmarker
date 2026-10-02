@@ -117,3 +117,109 @@ body::before {
 button, a, input, select {
   transition: background-color .15s ease, border-color .15s ease, color .15s ease;
 }
+
+/* =============================================================
+   Hiker mascot -- walks along the dashed contour rule under the
+   header, pauses at each end to shade his eyes and look around,
+   then turns and walks back. One 36s loop:
+     0-8s   walk left -> right
+     8-18s  look around (hand on forehead)
+    18-26s  walk right -> left
+    26-36s  look around, then repeat
+   Pure CSS (no JS). Respects prefers-reduced-motion.
+   ============================================================= */
+.hiker-track {
+  position: relative;
+  padding-top: 50px;
+}
+.hiker {
+  position: absolute;
+  bottom: 7px;            /* feet rest on top of the dashed line */
+  left: 0;
+  width: 36px;
+  height: 46px;
+  pointer-events: none;
+  z-index: 1;
+  animation: hk-move 36s linear infinite;
+}
+.hiker svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  transform-origin: 18px 23px;
+  animation: hk-face 36s linear infinite;
+}
+
+/* position along the line */
+@keyframes hk-move {
+  0%      { left: 0; }
+  22.22%  { left: calc(100% - 36px); }
+  50%     { left: calc(100% - 36px); }
+  72.22%  { left: 0; }
+  100%    { left: 0; }
+}
+/* which way he faces (flips as he turns back) */
+@keyframes hk-face {
+  0%, 49.9%   { transform: scaleX(1); }
+  50%, 99.9%  { transform: scaleX(-1); }
+  100%        { transform: scaleX(1); }
+}
+
+/* walking pose vs. standing/looking pose, swapped on schedule */
+.hk-walk { opacity: 1; animation: hk-show-walk 36s linear infinite; }
+.hk-look { opacity: 0; animation: hk-show-look 36s linear infinite; }
+@keyframes hk-show-walk {
+  0%, 22.2%   { opacity: 1; }
+  22.3%, 49.9% { opacity: 0; }
+  50%, 72.2%  { opacity: 1; }
+  72.3%, 99.9% { opacity: 0; }
+  100%        { opacity: 1; }
+}
+@keyframes hk-show-look {
+  0%, 22.2%   { opacity: 0; }
+  22.3%, 49.9% { opacity: 1; }
+  50%, 72.2%  { opacity: 0; }
+  72.3%, 99.9% { opacity: 1; }
+  100%        { opacity: 0; }
+}
+
+/* leg + arm swing while walking */
+.hk-leg-a, .hk-leg-b { transform-origin: 18px 31px; animation: hk-leg .55s ease-in-out infinite alternate; }
+.hk-leg-b { animation-direction: alternate-reverse; }
+.hk-arm-a, .hk-arm-b { transform-origin: 18px 22px; animation: hk-arm .55s ease-in-out infinite alternate; }
+.hk-arm-a { animation-direction: alternate-reverse; }
+@keyframes hk-leg { from { transform: rotate(26deg); }  to { transform: rotate(-26deg); } }
+@keyframes hk-arm { from { transform: rotate(32deg); }  to { transform: rotate(-32deg); } }
+
+/* head swivels side to side during each look-around */
+.hk-head { transform-origin: 18px 17px; animation: hk-swivel 36s ease-in-out infinite; }
+@keyframes hk-swivel {
+  0%, 23%   { transform: rotate(0deg); }
+  27%       { transform: rotate(-11deg); }
+  33%       { transform: rotate(11deg); }
+  39%       { transform: rotate(-11deg); }
+  45%       { transform: rotate(11deg); }
+  49%, 73%  { transform: rotate(0deg); }
+  77%       { transform: rotate(-11deg); }
+  83%       { transform: rotate(11deg); }
+  89%       { transform: rotate(-11deg); }
+  95%       { transform: rotate(11deg); }
+  99%, 100% { transform: rotate(0deg); }
+}
+
+/* hiker colors (use theme tokens so dark mode works) */
+.hk-skin   { fill: #F2C9A0; }
+.hk-shirt  { fill: rgb(var(--color-mustard)); }
+.hk-pack   { fill: rgb(var(--color-clay)); }
+.hk-hat    { fill: rgb(var(--color-pine)); }
+.hk-limb   { stroke: rgb(var(--color-ink)); stroke-width: 3; stroke-linecap: round; fill: none; }
+.hk-sleeve { stroke: rgb(var(--color-mustard)); stroke-width: 3.4; stroke-linecap: round; fill: none; }
+.hk-boot   { fill: rgb(var(--color-ink)); }
+.hk-eye    { fill: rgb(var(--color-ink)); }
+
+/* reduced motion: he just stands at the left end, hand on forehead */
+@media (prefers-reduced-motion: reduce) {
+  .hiker, .hiker svg, .hiker * { animation: none !important; }
+  .hk-walk { opacity: 0; }
+  .hk-look { opacity: 1; }
+}
