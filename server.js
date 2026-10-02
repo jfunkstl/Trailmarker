@@ -1532,6 +1532,107 @@ async function fetchMdcTrails(swLat, swLon, neLat, neLon) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Washington State RCO Trails Database integration -- the state's official
+// aggregated trails dataset (v2.0, April 2025), compiled by the Recreation
+// and Conservation Office from federal, state, county, and city agencies.
+// Same gap-filling role as COTREX and MDC above, for Washington.
+//
+// Endpoint, field names, and geometry verified directly against the live
+// FeatureServer (services2.arcgis.com/TGEC20q86HQAeMS6, layer 0 "Trails")
+// via real sample records before writing this. Geometry is esriGeometryPolyline
+// and the native spatial reference is Web Mercator (102100), so outSR=4326 is
+// required, same as COTREX and MDC. The service returns at most 2000 features
+// per query.
+//
+// Real-data quirks the sample records showed, handled below:
+//   - trail_name is often blank (many unnamed segments) -- fall back to
+//     trail_alternate_name, then trail_system_name; truly unnamed segments
+//     are skipped since there's nothing meaningful to label them with.
+//   - The same trail is split into many rows (e.g. Palouse to Cascades State
+//     Park Trail appears as several segments) -- combined by name here, with
+//     segment_length_mi summed.
+//   - Use flags are inconsistently cased ("yes"/"Yes"/blank) -- compared
+//     case-insensitively. Trails are kept when hiking_walking is yes OR the
+//     primary_use mentions hiking/walking.
+//   - trail_status is "Existing" for real trails -- anything else (planned/
+//     proposed) is skipped.
+// ---------------------------------------------------------------------------
+const WA_TRAILS_URL = "https://services2.arcgis.com/TGEC20q86HQAeMS6/arcgis/rest/services/WA_RCO_Trails_Database_Public_View/FeatureServer/0/query";
+// Washington's approximate statewide extent -- used to skip querying this
+// endpoint entirely for viewports that don't overlap Washington at all.
+const WASHINGTON_BOUNDS = { swLat: 45.5, swLon: -124.85, neLat: 49.05, neLon: -116.9 };
+function boundsOverlapWashington(swLat, swLon, neLat, neLon) {
+  return swLat <= WASHINGTON_BOUNDS.neLat && neLat >= WASHINGTON_BOUNDS.swLat &&
+    swLon <= WASHINGTON_BOUNDS.neLon && neLon >= WASHINGTON_BOUNDS.swLon;
+}
+
+function waTrailName(props) {
+  const pick = (v) => (typeof v === "string" ? v.trim() : "");
+  return pick(props.trail_name) || pick(props.trail_alternate_name) || pick(props.trail_system_name) || "";
+}
+function waIsHikeable(props) {
+  const hikingYes = String(props.hiking_walking || "").trim().toLowerCase() === "yes";
+  const primaryHiking = /hik|walk/i.test(String(props.primary_use || ""));
+  return hikingYes || primaryHiking;
+}
+function waIsExisting(props) {
+  const status = String(props.trail_status || "").trim();
+  return !status || /^existing$/i.test(status);
+}
+
+async function fetchWaTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapWashington(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`; // esriGeometryEnvelope order: xmin(lon),ymin(lat),xmax(lon),ymax(lat)
+  const url = `${WA_TRAILS_URL}?where=1%3D1&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=trail_name,trail_alternate_name,trail_system_name,trail_surface,segment_length_mi,management_agency,hiking_walking,primary_use,trail_status&outSR=4326&f=geojson`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`WA RCO trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("WA RCO trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const features = data.features || [];
+    const byName = new Map();
+    features.forEach((f) => {
+      const props = f.properties || {};
+      const geom = f.geometry;
+      if (!geom || !waIsHikeable(props) || !waIsExisting(props)) return;
+      const name = waTrailName(props);
+      if (!name) return;
+      // GeoJSON LineString/MultiLineString coords are [lon,lat] -- flip to [lat,lon].
+      const lines = geom.type === "MultiLineString" ? geom.coordinates : geom.type === "LineString" ? [geom.coordinates] : [];
+      const segCoordsList = lines.map((line) => line.map(([lon, lat]) => [lat, lon])).filter((seg) => seg.length >= 2);
+      if (segCoordsList.length === 0) return;
+      const lenKm = (Number(props.segment_length_mi) || 0) * 1.60934;
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: "Unknown", // the RCO database has no difficulty-rating field
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values());
+  } catch (err) {
+    console.error("WA RCO trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // Runs one Overpass query scoped to exactly the given bounds and returns
 // the parsed { trails, parks, areas } for that area alone. Extracted out of
 // the route handler so it can be called once per still-uncached grid cell,
@@ -1644,6 +1745,15 @@ out tags center;`.trim();
     mdcTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
   } catch (mdcErr) {
     console.error("MDC merge (map-pins) failed:", mdcErr.message || mdcErr);
+  }
+
+  // Merge in Washington's official RCO trail data, same gap-filling role as
+  // COTREX and MDC above, for Washington specifically.
+  try {
+    const waTrails = await fetchWaTrails(swLat, swLon, neLat, neLon);
+    waTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (waErr) {
+    console.error("WA RCO merge (map-pins) failed:", waErr.message || waErr);
   }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
