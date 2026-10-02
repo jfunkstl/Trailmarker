@@ -406,26 +406,49 @@ modalOverlay.addEventListener("click", (e) => { if (e.target === modalOverlay) c
 
 // ================= TRACK =================
 let tracking = false;
+let paused = false;
 let distance = 0;
 let elapsed = 0;
+let elevationGainFt = 0;
 let path = [];
 let lastPoint = null;
+let lastPointTimeMs = null;
+let lastAltitude = null;
 let watchId = null;
 let timerId = null;
 let followedTrail = null; // saved trail currently shown as the target route
 
 const trackBtn = document.getElementById("trackBtn");
 const trackBtnIcon = document.getElementById("trackBtnIcon");
+const pauseBtn = document.getElementById("pauseBtn");
+const pauseBtnIcon = document.getElementById("pauseBtnIcon");
 const timerDisplay = document.getElementById("timerDisplay");
 const distanceDisplay = document.getElementById("distanceDisplay");
 const trackState = document.getElementById("trackState");
 const gpsNote = document.getElementById("gpsNote");
 const statDistance = document.getElementById("statDistance");
+const statElevation = document.getElementById("statElevation");
 const statTime = document.getElementById("statTime");
 const statCalories = document.getElementById("statCalories");
 const trailPicker = document.getElementById("trailPicker");
 
 const caloriesFromKm = (km) => Math.round(km * 62);
+
+// A poor GPS fix (very common for the first reading or two right after
+// location services start, before the chip has settled) can report a
+// position from cell/wifi triangulation hundreds of meters off, then jump
+// to the real position on the next reading -- and without any filtering,
+// that jump gets drawn on the map and counted as real distance covered.
+// Rejecting low-accuracy fixes outright, plus a sanity cap on the implied
+// speed between consecutive accepted points, catches this before it ever
+// reaches the map or the stats.
+const GPS_ACCURACY_THRESHOLD_M = 30;
+const MAX_REALISTIC_SPEED_MPS = 8; // ~18mph -- generous for hiking/trail running, well below a GPS-jump-implied speed
+// Device altitude readings are noisier than horizontal position -- summing
+// every small up/down fluctuation as "elevation gained" wildly overcounts.
+// Only counting a rise bigger than this threshold as real gain is a common,
+// simple noise filter (not perfect, but far better than raw summation).
+const ELEVATION_NOISE_THRESHOLD_M = 3;
 
 let trackMap = null;
 let routeLine = null; // the saved/target trail, drawn once
@@ -480,70 +503,133 @@ trailPicker.addEventListener("change", () => selectTrailToFollow(trailPicker.val
 
 function updateLiveStats() {
   statDistance.textContent = fmtDist(distance);
+  statElevation.textContent = `+${Math.round(elevationGainFt).toLocaleString()} ft`;
   statTime.textContent = fmtTime(elapsed);
   statCalories.textContent = String(caloriesFromKm(distance / 1000));
 }
 
-function startTracking() {
-  distance = 0; elapsed = 0; path = []; lastPoint = null;
-  tracking = true;
-  gpsNote.classList.remove("show");
-  trackBtn.classList.add("recording");
-  trackBtnIcon.textContent = "■";
-  trackState.textContent = followedTrail ? `Tracking ${followedTrail.name}` : "Tracking";
-  timerDisplay.textContent = fmtTime(0);
-  distanceDisplay.textContent = fmtDist(0);
-  updateLiveStats();
-
-  const map = ensureTrackMap();
-  if (walkedLine) walkedLine.setLatLngs([]);
-
+function beginTimer() {
   timerId = setInterval(() => {
     elapsed += 1;
     timerDisplay.textContent = fmtTime(elapsed);
     updateLiveStats();
   }, 1000);
+}
 
-  if (navigator.geolocation) {
-    watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        path.push(p);
-        if (lastPoint) {
-          const d = haversineKm(lastPoint.lat, lastPoint.lng, p.lat, p.lng) * 1000;
-          if (d > 0.5) {
-            distance += d;
-            distanceDisplay.textContent = fmtDist(distance);
-            updateLiveStats();
-          }
-        }
-        lastPoint = p;
-        walkedLine.addLatLng([p.lat, p.lng]);
-        if (!liveDot) {
-          liveDot = L.circleMarker([p.lat, p.lng], { radius: 7, color: "#1e3a8a", fillColor: "#2563EB", fillOpacity: 1, weight: 2 }).addTo(map);
-        } else {
-          liveDot.setLatLng([p.lat, p.lng]);
-        }
-        map.panTo([p.lat, p.lng]);
-      },
-      () => {
-        gpsNote.textContent = "Location unavailable — you can still time the hike and log distance by hand.";
-        gpsNote.classList.add("show");
-      },
-      { enableHighAccuracy: true, maximumAge: 1000 }
-    );
-  } else {
+function beginGeoWatch() {
+  if (!navigator.geolocation) {
     gpsNote.textContent = "This browser can't share location — timing only.";
     gpsNote.classList.add("show");
+    return;
   }
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const accuracy = pos.coords.accuracy;
+      if (accuracy != null && accuracy > GPS_ACCURACY_THRESHOLD_M) {
+        // Poor fix -- skip entirely rather than let it draw a bogus jump
+        // on the map or add fake distance/elevation.
+        return;
+      }
+      const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      const nowMs = pos.timestamp || Date.now();
+      if (lastPoint) {
+        const d = haversineKm(lastPoint.lat, lastPoint.lng, p.lat, p.lng) * 1000;
+        const dtSec = lastPointTimeMs ? Math.max(0.001, (nowMs - lastPointTimeMs) / 1000) : 1;
+        if (d / dtSec > MAX_REALISTIC_SPEED_MPS) {
+          // Implausible jump for a hike -- the classic signature of a GPS
+          // glitch even when the reported accuracy looked acceptable.
+          return;
+        }
+        if (d > 0.5) {
+          distance += d;
+          distanceDisplay.textContent = fmtDist(distance);
+          updateLiveStats();
+        }
+      }
+      const alt = pos.coords.altitude;
+      if (alt != null && lastAltitude != null) {
+        const rise = alt - lastAltitude;
+        if (rise > ELEVATION_NOISE_THRESHOLD_M) {
+          elevationGainFt += rise * 3.28084;
+          updateLiveStats();
+        }
+      }
+      if (alt != null) lastAltitude = alt;
+      lastPoint = p;
+      lastPointTimeMs = nowMs;
+      path.push(p);
+      walkedLine.addLatLng([p.lat, p.lng]);
+      if (!liveDot) {
+        liveDot = L.circleMarker([p.lat, p.lng], { radius: 7, color: "#1e3a8a", fillColor: "#2563EB", fillOpacity: 1, weight: 2 }).addTo(trackMap);
+      } else {
+        liveDot.setLatLng([p.lat, p.lng]);
+      }
+      trackMap.panTo([p.lat, p.lng]);
+    },
+    () => {
+      gpsNote.textContent = "Location unavailable — you can still time the hike and log distance by hand.";
+      gpsNote.classList.add("show");
+    },
+    { enableHighAccuracy: true, maximumAge: 1000 }
+  );
 }
+
+function startTracking() {
+  distance = 0; elapsed = 0; elevationGainFt = 0; path = [];
+  lastPoint = null; lastPointTimeMs = null; lastAltitude = null;
+  tracking = true; paused = false;
+  gpsNote.classList.remove("show");
+  trackBtn.classList.add("recording");
+  trackBtnIcon.textContent = "■";
+  pauseBtn.classList.remove("hidden");
+  pauseBtnIcon.textContent = "⏸";
+  trackState.textContent = followedTrail ? `Tracking ${followedTrail.name}` : "Tracking";
+  timerDisplay.textContent = fmtTime(0);
+  distanceDisplay.textContent = fmtDist(0);
+  updateLiveStats();
+
+  ensureTrackMap();
+  if (walkedLine) walkedLine.setLatLngs([]);
+  if (liveDot) { trackMap.removeLayer(liveDot); liveDot = null; }
+
+  beginTimer();
+  beginGeoWatch();
+}
+
+function pauseTracking() {
+  paused = true;
+  clearInterval(timerId);
+  if (watchId !== null && navigator.geolocation) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  // Force the next accepted GPS fix, whenever tracking resumes, to only
+  // set a fresh anchor point rather than being compared against wherever
+  // the device was right before pausing -- otherwise moving around during
+  // the break (or GPS drift while stationary) would silently add fake
+  // distance right at resume, the same class of bug as the startup jump.
+  lastPoint = null;
+  lastPointTimeMs = null;
+  lastAltitude = null;
+  pauseBtnIcon.textContent = "▶";
+  trackState.textContent = followedTrail ? `Paused — ${followedTrail.name}` : "Paused";
+}
+
+function resumeTracking() {
+  paused = false;
+  pauseBtnIcon.textContent = "⏸";
+  trackState.textContent = followedTrail ? `Tracking ${followedTrail.name}` : "Tracking";
+  beginTimer();
+  beginGeoWatch();
+}
+
+pauseBtn.addEventListener("click", () => (paused ? resumeTracking() : pauseTracking()));
 
 function stopTracking() {
   tracking = false;
+  paused = false;
   clearInterval(timerId);
   if (watchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId);
   trackBtn.classList.remove("recording");
   trackBtnIcon.textContent = "▶";
+  pauseBtn.classList.add("hidden");
   trackState.textContent = followedTrail ? `Following ${followedTrail.name}` : "Ready when you are";
   openSaveTrackModal();
 }
@@ -551,7 +637,7 @@ function stopTracking() {
 function openSaveTrackModal() {
   openModal("Save this hike", `
     <p class="font-condensed text-lg text-pine flex gap-5 mb-3.5">
-      <span>${fmtDist(distance)}</span><span>${fmtTime(elapsed)}</span><span>${caloriesFromKm(distance / 1000)} cal</span>
+      <span>${fmtDist(distance)}</span><span>+${Math.round(elevationGainFt).toLocaleString()} ft</span><span>${fmtTime(elapsed)}</span><span>${caloriesFromKm(distance / 1000)} cal</span>
     </p>
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Name</span><input class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="trackName" placeholder="Ridge Trail loop" value="${followedTrail ? escapeHtml(followedTrail.name) : ""}" autofocus /></label>
     <label class="block mb-3"><span class="font-condensed uppercase text-xs tracking-wide opacity-60">Notes</span><textarea class="w-full mt-1 rounded-xl border border-line bg-card px-3 py-2 text-sm" id="trackNotes" rows="3" placeholder="Muddy near the summit, worth it for the view"></textarea></label>
@@ -561,7 +647,7 @@ function openSaveTrackModal() {
     </div>
   `);
   document.getElementById("discardTrackBtn").addEventListener("click", () => {
-    distance = 0; elapsed = 0; path = [];
+    distance = 0; elapsed = 0; elevationGainFt = 0; path = [];
     updateLiveStats();
     timerDisplay.textContent = fmtTime(0);
     distanceDisplay.textContent = fmtDist(0);
@@ -570,9 +656,9 @@ function openSaveTrackModal() {
   document.getElementById("saveTrackBtn").addEventListener("click", () => {
     const name = document.getElementById("trackName").value.trim() || "Untitled hike";
     const notes = document.getElementById("trackNotes").value.trim();
-    hikes = [{ id: uid(), date: new Date().toISOString(), name, distance, duration: elapsed, notes, path, source: "tracked" }, ...hikes];
+    hikes = [{ id: uid(), date: new Date().toISOString(), name, distance, duration: elapsed, elevationGain: elevationGainFt, notes, path, source: "tracked" }, ...hikes];
     saveHikes(hikes);
-    distance = 0; elapsed = 0; path = [];
+    distance = 0; elapsed = 0; elevationGainFt = 0; path = [];
     updateLiveStats();
     timerDisplay.textContent = fmtTime(0);
     distanceDisplay.textContent = fmtDist(0);
@@ -1125,6 +1211,7 @@ function renderJournal() {
       <h3>${escapeHtml(h.name)}</h3>
       <div class="flex flex-wrap gap-2 my-2">
         <span>${fmtDist(h.distance || 0)}</span>
+        ${h.elevationGain ? `<span>+${Math.round(h.elevationGain).toLocaleString()} ft</span>` : ""}
         <span>${fmtTime(h.duration || 0)}</span>
       </div>
       ${h.notes ? `<p class="text-sm opacity-70 mt-1">${escapeHtml(h.notes)}</p>` : ""}
