@@ -212,6 +212,43 @@ function haversineKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
 }
 
+// Accurate distance between two points on the WGS-84 ellipsoid (Vincenty's
+// inverse formula). Haversine treats the Earth as a perfect sphere, which is
+// off by up to ~0.5% depending on latitude and direction; this is the
+// standard survey-grade method, used for Create's route mileage. Falls back
+// to haversine in the rare case the iteration doesn't converge.
+function geodesicKm(lat1, lon1, lat2, lon2) {
+  if (lat1 === lat2 && lon1 === lon2) return 0;
+  const a = 6378137, f = 1 / 298.257223563, b = (1 - f) * a;
+  const rad = Math.PI / 180;
+  const L = (lon2 - lon1) * rad;
+  const U1 = Math.atan((1 - f) * Math.tan(lat1 * rad));
+  const U2 = Math.atan((1 - f) * Math.tan(lat2 * rad));
+  const sinU1 = Math.sin(U1), cosU1 = Math.cos(U1);
+  const sinU2 = Math.sin(U2), cosU2 = Math.cos(U2);
+  let lambda = L, lambdaPrev, iter = 0;
+  let sinSigma, cosSigma, sigma, cos2Alpha, cos2SigmaM;
+  do {
+    const sinLambda = Math.sin(lambda), cosLambda = Math.cos(lambda);
+    sinSigma = Math.sqrt((cosU2 * sinLambda) ** 2 + (cosU1 * sinU2 - sinU1 * cosU2 * cosLambda) ** 2);
+    if (sinSigma === 0) return 0;
+    cosSigma = sinU1 * sinU2 + cosU1 * cosU2 * cosLambda;
+    sigma = Math.atan2(sinSigma, cosSigma);
+    const sinAlpha = (cosU1 * cosU2 * sinLambda) / sinSigma;
+    cos2Alpha = 1 - sinAlpha * sinAlpha;
+    cos2SigmaM = cos2Alpha !== 0 ? cosSigma - (2 * sinU1 * sinU2) / cos2Alpha : 0;
+    const C = (f / 16) * cos2Alpha * (4 + f * (4 - 3 * cos2Alpha));
+    lambdaPrev = lambda;
+    lambda = L + (1 - C) * f * sinAlpha * (sigma + C * sinSigma * (cos2SigmaM + C * cosSigma * (-1 + 2 * cos2SigmaM * cos2SigmaM)));
+  } while (Math.abs(lambda - lambdaPrev) > 1e-12 && ++iter < 100);
+  if (iter >= 100) return haversineKm(lat1, lon1, lat2, lon2);
+  const uSq = (cos2Alpha * (a * a - b * b)) / (b * b);
+  const A = 1 + (uSq / 16384) * (4096 + uSq * (-768 + uSq * (320 - 175 * uSq)));
+  const B = (uSq / 1024) * (256 + uSq * (-128 + uSq * (74 - 47 * uSq)));
+  const dSigma = B * sinSigma * (cos2SigmaM + (B / 4) * (cosSigma * (-1 + 2 * cos2SigmaM * cos2SigmaM) - (B / 6) * cos2SigmaM * (-3 + 4 * sinSigma * sinSigma) * (-3 + 4 * cos2SigmaM * cos2SigmaM)));
+  return (b * A * (sigma - dSigma)) / 1000;
+}
+
 // -------------------------------------------------------------
 // 1. chainSegmentsFromStart(segments, startPoint)
 // Greedily orders and re-orients segments to maintain contiguous trail flow.
@@ -677,6 +714,10 @@ const SNAP_RADIUS_PX = 15;
 // How close (in screen pixels) a tap must be to a trail's line to count as
 // "touching" that trail -- used to select/highlight it.
 const HIT_RADIUS_PX = 18;
+// How far from the trail (screen pixels) a dragged start/end pin can be dropped
+// and still snap onto it, and how close to the OTHER pin counts as "dropped on it".
+const DRAG_SNAP_RADIUS_PX = 40;
+const PIN_MERGE_RADIUS_PX = 30;
 
 const startIcon = L.divIcon({
   html: `<div style="font-size: 20px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">🟢</div>`,
@@ -914,6 +955,8 @@ function editorPushSnapshot(editor) {
   editor.undoStack.push({
     segments: editor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
     selectedPoint: editor.selectedPoint ? [editor.selectedPoint[0], editor.selectedPoint[1]] : null,
+    startAnchor: editor.startAnchor ? [editor.startAnchor[0], editor.startAnchor[1]] : null,
+    endAnchor: editor.endAnchor ? [editor.endAnchor[0], editor.endAnchor[1]] : null,
   });
   if (editor.undoStack.length > 50) editor.undoStack.shift();
 }
@@ -950,6 +993,102 @@ function editorRedraw(editor) {
   }
 }
 
+// A "closed ring" is a single trail whose last point is its first point
+// (e.g. three trails joined end-to-end and closed back to the start).
+function isClosedRing(seg) {
+  return Boolean(seg) && seg.length >= 4 && seg[0][0] === seg[seg.length - 1][0] && seg[0][1] === seg[seg.length - 1][1];
+}
+function editorIsClosedRing(editor) {
+  const chained = chainSegmentsFromStart(editor.segments);
+  return chained.length === 1 && isClosedRing(chained[0]);
+}
+
+// Finds the spot on the trail nearest to where a pin was dropped (within
+// DRAG_SNAP_RADIUS_PX) -- anywhere along a line, not just at its endpoints.
+// If that spot is between two existing points, a new point is inserted there
+// (it lies exactly on the line, so the trail's shape doesn't change).
+// Returns the [lat,lon] of the spot, or null if the drop wasn't near a trail.
+function editorSnapToTrail(editor, latlng) {
+  const tap = editor.map.latLngToContainerPoint(latlng);
+  let best = null;
+  let bestDist = DRAG_SNAP_RADIUS_PX;
+  editor.segments.forEach((seg, si) => {
+    for (let i = 1; i < seg.length; i++) {
+      const a = editor.map.latLngToContainerPoint(seg[i - 1]);
+      const b = editor.map.latLngToContainerPoint(seg[i]);
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len2 = dx * dx + dy * dy;
+      let t = len2 ? ((tap.x - a.x) * dx + (tap.y - a.y) * dy) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(tap.x - (a.x + t * dx), tap.y - (a.y + t * dy));
+      if (d < bestDist) { bestDist = d; best = { si, i, t }; }
+    }
+  });
+  if (!best) return null;
+  const seg = editor.segments[best.si];
+  const p0 = seg[best.i - 1], p1 = seg[best.i];
+  if (best.t < 0.02) return [p0[0], p0[1]];
+  if (best.t > 0.98) return [p1[0], p1[1]];
+  const pt = [p0[0] + (p1[0] - p0[0]) * best.t, p0[1] + (p1[1] - p0[1]) * best.t];
+  seg.splice(best.i, 0, pt);
+  return pt;
+}
+
+// Called when a start/end pin is released. which = "start" | "end" | "both"
+// ("both" is the half-green/half-blue pin of a loop, which moves as one).
+//  - Dropped on the OTHER pin: start and finish become the same point. On a
+//    closed loop that's a full lap from that point; on an open chain of
+//    trails it closes the loop with a straight connector from the end back
+//    to the start (the toast says how long the connector is).
+//  - Dropped on the trail: the pin moves to that spot on the trail.
+//  - Dropped anywhere else: nothing changes (the pin snaps back).
+function editorMoveAnchor(editor, which, dropLatLng) {
+  const flat = getActiveTrimmedPolyline(editor);
+  if (flat.length < 2) return false;
+  const startPt = flat[0];
+  const endPt = flat[flat.length - 1];
+  const dropPx = editor.map.latLngToContainerPoint(dropLatLng);
+  const isNear = (pt) => {
+    const px = editor.map.latLngToContainerPoint(pt);
+    return Math.hypot(px.x - dropPx.x, px.y - dropPx.y) <= PIN_MERGE_RADIUS_PX;
+  };
+
+  const droppedOnOther = (which === "start" && isNear(endPt)) || (which === "end" && isNear(startPt));
+  if (droppedOnOther) {
+    const target = which === "start" ? [endPt[0], endPt[1]] : [startPt[0], startPt[1]];
+    if (!editorIsClosedRing(editor)) {
+      if (editor.segments.length !== 1 || editor.segments[0].length < 3) {
+        showToast("Join the trails into one trail first, then drop the pins together to make a loop");
+        return false;
+      }
+      editorPushSnapshot(editor);
+      const seg = editor.segments[0];
+      const first = seg[0], last = seg[seg.length - 1];
+      const gapKm = geodesicKm(last[0], last[1], first[0], first[1]);
+      seg.push([first[0], first[1]]);
+      showToast(gapKm > 0.0005 ? `Loop closed — added a ${fmtDist(gapKm * 1000)} straight connector` : "Loop closed");
+      editor.startAnchor = target;
+      editor.endAnchor = target;
+      return true;
+    }
+    editorPushSnapshot(editor);
+    editor.startAnchor = target;
+    editor.endAnchor = [target[0], target[1]];
+    return true;
+  }
+
+  editorPushSnapshot(editor);
+  const pt = editorSnapToTrail(editor, dropLatLng);
+  if (!pt) {
+    editor.undoStack.pop();
+    return false;
+  }
+  if (which === "start") editor.startAnchor = pt;
+  else if (which === "end") editor.endAnchor = pt;
+  else { editor.startAnchor = pt; editor.endAnchor = [pt[0], pt[1]]; }
+  return true;
+}
+
 function editorUpdateWaypoints(editor) {
   editor.waypointGroup.clearLayers();
 
@@ -959,54 +1098,54 @@ function editorUpdateWaypoints(editor) {
   const startPt = flatPoints[0];
   const endPt = flatPoints[flatPoints.length - 1];
 
-  // Option A Solution: Render a single dual-color marker when startLat = endLat and startLng = endLng
+  // When start and finish are the same point (a loop), show ONE half-green /
+  // half-blue pin; otherwise a green start pin and a blue end pin. Every pin
+  // can be pressed, dragged along the trail, and released.
   const isOverlapping = startPt[0] === endPt[0] && startPt[1] === endPt[1];
+  const wire = (marker, which) => {
+    marker.on("dragend", (e) => {
+      editorMoveAnchor(editor, which, e.target.getLatLng());
+      editorRedraw(editor);
+    });
+  };
 
   if (isOverlapping) {
-    const splitMarker = L.marker(startPt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup);
-    splitMarker.on("dragend", (e) => {
-      // Snap the drop point to the nearest actual segment endpoint, then
-      // store that COORDINATE directly as both anchors -- no index lookup
-      // needed at all, so there's nothing that can go stale when segments
-      // get reordered/reversed by chainSegmentsFromStart() on the next
-      // redraw. If the drop wasn't near a valid endpoint, leave the
-      // anchors untouched (the marker visually snaps back to where it
-      // was), matching the original snap-or-cancel behavior.
-      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      if (snap) {
-        const anchor = [snap.latlng[0], snap.latlng[1]];
-        editor.startAnchor = anchor;
-        editor.endAnchor = anchor;
-      }
-      editorRedraw(editor);
-    });
+    wire(L.marker(startPt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup), "both");
   } else {
-    const startMarker = L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup);
-    const endMarker = L.marker(endPt, { icon: endIcon, draggable: true }).addTo(editor.waypointGroup);
-
-    startMarker.on("dragend", (e) => {
-      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      if (snap) {
-        editor.startAnchor = [snap.latlng[0], snap.latlng[1]];
-      }
-      editorRedraw(editor);
-    });
-
-    endMarker.on("dragend", (e) => {
-      const snap = editorFindSnapCandidate(editor, e.target.getLatLng());
-      if (snap) {
-        editor.endAnchor = [snap.latlng[0], snap.latlng[1]];
-      }
-      editorRedraw(editor);
-    });
+    wire(L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup), "start");
+    wire(L.marker(endPt, { icon: endIcon, draggable: true }).addTo(editor.waypointGroup), "end");
   }
 }
 
+// The route actually being measured/saved. Anchors are coordinates (see
+// makeEditor). For a closed loop the route runs from the start pin, around
+// the loop in the order the trails were joined, to the end pin -- and when
+// both pins are the same point it's one full lap. For an open chain it's the
+// stretch between the two pins.
 function getActiveTrimmedPolyline(editor) {
   const chained = chainSegmentsFromStart(editor.segments);
   const flat = chained.flat();
 
   if (flat.length === 0) return [];
+
+  if (chained.length === 1 && isClosedRing(chained[0])) {
+    const ring = chained[0];
+    const n = ring.length - 1; // distinct positions; ring[n] repeats ring[0]
+    const indexOfAnchor = (anchor) => {
+      if (!anchor) return 0;
+      const idx = ring.findIndex((p) => p[0] === anchor[0] && p[1] === anchor[1]);
+      return idx === -1 ? 0 : idx % n;
+    };
+    const s = indexOfAnchor(editor.startAnchor);
+    const e = indexOfAnchor(editor.endAnchor);
+    const out = [ring[s]];
+    let i = s;
+    do {
+      i = (i + 1) % n;
+      out.push(ring[i]);
+    } while (i !== e);
+    return out;
+  }
 
   // Look up each anchor's position in THIS chained ordering fresh, every
   // time -- never trust a previously-stored index, since
@@ -1035,7 +1174,8 @@ function getActiveTrimmedPolyline(editor) {
 //   1. Nothing selected + tap on a trail  -> select (highlight) that trail.
 //   2. Nothing selected + tap on empty map -> start a new line (snapping to a
 //      nearby trail endpoint if there is one); the new line is selected.
-//   3. A trail is selected:
+//   3. A trail is selected (tapping near its own start/end closes it into a
+//      loop; otherwise:
 //        - tap near ANOTHER trail's endpoint -> extend the selected trail to
 //          that exact endpoint, which joins the two (whole thing stays
 //          highlighted);
@@ -1072,7 +1212,27 @@ function editorClick(editor, latlng) {
   }
 
   // ---- a trail is selected ----
-  const snap = editorFindSnapCandidate(editor, latlng, selIdx);
+  const selSeg = editor.segments[selIdx];
+  let snap = editorFindSnapCandidate(editor, latlng);
+
+  // Tapped near one of the selected trail's OWN ends: close the loop by
+  // joining the opposite end back to it (tap near the start -> the end
+  // reaches back to the start, and vice versa).
+  if (snap && snap.segIndex === selIdx) {
+    if (isClosedRing(selSeg)) return;
+    if (selSeg.length >= 3) {
+      editorPushSnapshot(editor);
+      if (snap.ptIndex === 0) selSeg.push([selSeg[0][0], selSeg[0][1]]);
+      else selSeg.unshift([selSeg[selSeg.length - 1][0], selSeg[selSeg.length - 1][1]]);
+      editor.startAnchor = null;
+      editor.endAnchor = null;
+      editorRedraw(editor);
+      showToast("Loop closed — drag the green/blue pins to set the start and finish");
+      return;
+    }
+    snap = null; // too short to close -- treat as an ordinary tap
+  }
+
   if (!snap) {
     const otherIdx = editorSegmentHitTest(editor, latlng, selIdx);
     if (otherIdx !== -1) {
@@ -1130,8 +1290,8 @@ function editorUndo(editor) {
   if (!snapshot) return;
   editor.segments = snapshot.segments;
   editor.selectedPoint = snapshot.selectedPoint;
-  editor.startAnchor = null;
-  editor.endAnchor = null;
+  editor.startAnchor = snapshot.startAnchor;
+  editor.endAnchor = snapshot.endAnchor;
   editorRedraw(editor);
 }
 
@@ -1164,7 +1324,7 @@ function editorDistanceKm(editor) {
   const activePolyline = getActiveTrimmedPolyline(editor);
   let km = 0;
   for (let i = 1; i < activePolyline.length; i++) {
-    km += haversineKm(
+    km += geodesicKm(
       activePolyline[i - 1][0],
       activePolyline[i - 1][1],
       activePolyline[i][0],
