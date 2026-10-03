@@ -674,6 +674,9 @@ trackBtn.addEventListener("click", () => (tracking ? stopTracking() : startTrack
 
 // ================= SHARED TRAIL-EDITING ENGINE =================
 const SNAP_RADIUS_PX = 15;
+// How close (in screen pixels) a tap must be to a trail's line to count as
+// "touching" that trail -- used to select/highlight it.
+const HIT_RADIUS_PX = 18;
 
 const startIcon = L.divIcon({
   html: `<div style="font-size: 20px; text-shadow: 0 1px 3px rgba(0,0,0,0.5);">🟢</div>`,
@@ -725,10 +728,23 @@ function makeEditor(map) {
     startAnchor: null,
     endAnchor: null,
     onTrailChange: null,
+    // Selected ("highlighted") trail. Same reasoning as the anchors above:
+    // mergeTopology() rebuilds and reorders the segment arrays on every
+    // redraw, so the selection is remembered as ONE coordinate that lies on
+    // the selected trail, and its segment is looked up fresh each time. When
+    // two trails get joined, the merged segment still contains that
+    // coordinate -- so the whole joined trail stays highlighted for free.
+    selectedPoint: null,
+    selectedCasing: null,
+    selectedLayer: null,
+    deselectControl: null,
+    undoStack: [],
   };
 }
 
-function editorFindSnapCandidate(editor, latlng) {
+// excludeSegIndex lets the caller ignore one segment's endpoints -- used
+// while a trail is selected so its OWN endpoints don't count as join targets.
+function editorFindSnapCandidate(editor, latlng, excludeSegIndex = -1) {
   if (!editor.map || editor.segments.length === 0) return null;
   const clickPt = editor.map.latLngToContainerPoint(latlng);
 
@@ -737,6 +753,7 @@ function editorFindSnapCandidate(editor, latlng) {
 
   editor.segments.forEach((seg, segIdx) => {
     if (!seg || seg.length === 0) return;
+    if (segIdx === excludeSegIndex) return;
 
     const endpoints = [
       { point: seg[0], ptIndex: 0, isStart: true },
@@ -809,6 +826,98 @@ function mergeTopology(segments) {
   return pool;
 }
 
+// ---------- trail selection / highlighting ----------
+// Index of the segment that currently contains the given coordinate, or -1.
+function editorSegmentIndexContaining(editor, pt) {
+  if (!pt) return -1;
+  return editor.segments.findIndex((seg) => seg.some((p) => p[0] === pt[0] && p[1] === pt[1]));
+}
+
+// Index of the trail whose LINE passes within HIT_RADIUS_PX of the tap, or
+// -1. Measured in screen pixels (like erase/snap) so it feels the same at
+// any zoom level. excludeIdx lets the caller ignore the already-selected trail.
+function editorSegmentHitTest(editor, latlng, excludeIdx = -1) {
+  const tap = editor.map.latLngToContainerPoint(latlng);
+  let bestIdx = -1;
+  let bestDist = HIT_RADIUS_PX;
+  editor.segments.forEach((seg, idx) => {
+    if (idx === excludeIdx) return;
+    for (let i = 1; i < seg.length; i++) {
+      const a = editor.map.latLngToContainerPoint(seg[i - 1]);
+      const b = editor.map.latLngToContainerPoint(seg[i]);
+      const d = L.LineUtil.pointToSegmentDistance(tap, a, b);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = idx;
+      }
+    }
+  });
+  return bestIdx;
+}
+
+// Small "Deselect trail" button, shown on the map only while a trail is
+// selected -- it's the way to stop extending a trail and start a new line.
+function editorSetDeselectControl(editor, show) {
+  if (show && !editor.deselectControl) {
+    const DeselectControl = L.Control.extend({
+      options: { position: "topright" },
+      onAdd() {
+        const div = L.DomUtil.create("div", "");
+        div.innerHTML = `<button type="button" style="background:rgb(var(--color-card));color:rgb(var(--color-ink));border:1px solid rgb(var(--color-line));border-radius:9999px;padding:6px 12px;font:600 12px 'IBM Plex Mono',monospace;box-shadow:0 1px 4px rgba(0,0,0,0.3);">✕ Deselect trail</button>`;
+        L.DomEvent.disableClickPropagation(div);
+        div.querySelector("button").addEventListener("click", () => editorDeselect(editor));
+        return div;
+      },
+    });
+    editor.deselectControl = new DeselectControl();
+    editor.deselectControl.addTo(editor.map);
+  } else if (!show && editor.deselectControl) {
+    editor.deselectControl.remove();
+    editor.deselectControl = null;
+  }
+}
+
+// Draws the highlight (white casing + bright orange line) over whichever
+// trail currently contains selectedPoint. If that point no longer exists
+// (e.g. it was erased) the selection quietly clears itself.
+function editorDrawSelection(editor) {
+  if (editor.selectedCasing) { editor.map.removeLayer(editor.selectedCasing); editor.selectedCasing = null; }
+  if (editor.selectedLayer) { editor.map.removeLayer(editor.selectedLayer); editor.selectedLayer = null; }
+
+  const idx = editorSegmentIndexContaining(editor, editor.selectedPoint);
+  if (idx === -1) {
+    editor.selectedPoint = null;
+    editorSetDeselectControl(editor, false);
+    return;
+  }
+  const seg = editor.segments[idx];
+  editor.selectedCasing = L.polyline(seg, { color: "#ffffff", weight: 11, opacity: 0.9, interactive: false }).addTo(editor.map);
+  editor.selectedLayer = L.polyline(seg, { color: "#F97316", weight: 6, opacity: 1, interactive: false }).addTo(editor.map);
+  editorSetDeselectControl(editor, true);
+}
+
+function editorSelectSegment(editor, idx) {
+  const seg = editor.segments[idx];
+  editor.selectedPoint = seg ? [seg[0][0], seg[0][1]] : null;
+  editorDrawSelection(editor);
+}
+
+function editorDeselect(editor) {
+  editor.selectedPoint = null;
+  editorDrawSelection(editor);
+}
+
+// Undo is snapshot-based: each edit first saves a copy of the whole trail
+// (and which one was selected), and Undo simply restores the last copy. This
+// stays correct even after joins, which reorder and merge segments.
+function editorPushSnapshot(editor) {
+  editor.undoStack.push({
+    segments: editor.segments.map((seg) => seg.map((p) => [p[0], p[1]])),
+    selectedPoint: editor.selectedPoint ? [editor.selectedPoint[0], editor.selectedPoint[1]] : null,
+  });
+  if (editor.undoStack.length > 50) editor.undoStack.shift();
+}
+
 function editorRedraw(editor) {
   editor.segments = mergeTopology(editor.segments);
 
@@ -817,6 +926,8 @@ function editorRedraw(editor) {
   } else {
     editor.polylineLayer.setLatLngs(editor.segments);
   }
+
+  editorDrawSelection(editor);
 
   editor.markerGroup.clearLayers();
   editor.segments.forEach((seg) => {
@@ -920,29 +1031,75 @@ function getActiveTrimmedPolyline(editor) {
   return flat.slice(start, end + 1);
 }
 
+// Pencil-mode tap behavior:
+//   1. Nothing selected + tap on a trail  -> select (highlight) that trail.
+//   2. Nothing selected + tap on empty map -> start a new line (snapping to a
+//      nearby trail endpoint if there is one); the new line is selected.
+//   3. A trail is selected:
+//        - tap near ANOTHER trail's endpoint -> extend the selected trail to
+//          that exact endpoint, which joins the two (whole thing stays
+//          highlighted);
+//        - tap on another trail's middle -> switch the selection to it;
+//        - otherwise -> add a point, attached at whichever end of the
+//          selected trail is nearest to the tap. That new point becomes the
+//          trail's new end, ready to be extended again.
 function editorClick(editor, latlng) {
-  let targetPoint = [latlng.lat, latlng.lng];
+  if (editor.mode === "eraser") {
+    editorEraseNear(editor, latlng);
+    return;
+  }
+  if (editor.mode !== "pencil") return;
 
-  if (editor.mode === "pencil") {
+  let selIdx = editorSegmentIndexContaining(editor, editor.selectedPoint);
+  if (selIdx === -1) editor.selectedPoint = null;
+
+  // ---- nothing selected ----
+  if (selIdx === -1) {
+    const hitIdx = editorSegmentHitTest(editor, latlng);
+    if (hitIdx !== -1) {
+      editorSelectSegment(editor, hitIdx);
+      showToast("Trail selected — tap near it to extend it");
+      return;
+    }
+    editorPushSnapshot(editor);
     const snap = editorFindSnapCandidate(editor, latlng);
-    if (snap) {
-      targetPoint = [snap.latlng[0], snap.latlng[1]];
-    }
-
-    if (editor.segments.length === 0 || editor.freshSegment) {
-      editor.segments.push([]);
-      editor.freshSegment = false;
-    }
-
-    editor.segments[editor.segments.length - 1].push(targetPoint);
+    const startPt = snap ? [snap.latlng[0], snap.latlng[1]] : [latlng.lat, latlng.lng];
+    editor.segments.push([startPt]);
+    editor.selectedPoint = startPt;
     editor.endAnchor = null;
     editorRedraw(editor);
-  } else if (editor.mode === "eraser") {
-    editorEraseNear(editor, latlng);
+    return;
   }
+
+  // ---- a trail is selected ----
+  const snap = editorFindSnapCandidate(editor, latlng, selIdx);
+  if (!snap) {
+    const otherIdx = editorSegmentHitTest(editor, latlng, selIdx);
+    if (otherIdx !== -1) {
+      editorSelectSegment(editor, otherIdx);
+      showToast("Trail selected — tap near it to extend it");
+      return;
+    }
+  }
+
+  const target = snap ? [snap.latlng[0], snap.latlng[1]] : [latlng.lat, latlng.lng];
+  const seg = editor.segments[selIdx];
+  const targetPx = editor.map.latLngToContainerPoint(target);
+  const firstPx = editor.map.latLngToContainerPoint(seg[0]);
+  const lastPx = editor.map.latLngToContainerPoint(seg[seg.length - 1]);
+  const dFirst = Math.hypot(firstPx.x - targetPx.x, firstPx.y - targetPx.y);
+  const dLast = Math.hypot(lastPx.x - targetPx.x, lastPx.y - targetPx.y);
+
+  editorPushSnapshot(editor);
+  if (dFirst < dLast) seg.unshift(target);
+  else seg.push(target);
+  editor.startAnchor = null;
+  editor.endAnchor = null;
+  editorRedraw(editor);
 }
 
 function editorEraseNear(editor, latlng) {
+  editorPushSnapshot(editor);
   const tapPoint = editor.map.latLngToContainerPoint(latlng);
   const RADIUS_PX = 24;
   const isNear = (p) => {
@@ -969,18 +1126,20 @@ function editorEraseNear(editor, latlng) {
 }
 
 function editorUndo(editor) {
-  if (editor.segments.length === 0) return;
-  const last = editor.segments[editor.segments.length - 1];
-  last.pop();
-  if (last.length === 0) editor.segments.pop();
+  const snapshot = editor.undoStack.pop();
+  if (!snapshot) return;
+  editor.segments = snapshot.segments;
+  editor.selectedPoint = snapshot.selectedPoint;
   editor.startAnchor = null;
   editor.endAnchor = null;
   editorRedraw(editor);
 }
 
 function editorClear(editor) {
+  if (editor.segments.length > 0) editorPushSnapshot(editor);
   editor.segments = [];
   editor.freshSegment = true;
+  editor.selectedPoint = null;
   editor.startAnchor = null;
   editor.endAnchor = null;
   editorRedraw(editor);
@@ -988,8 +1147,10 @@ function editorClear(editor) {
 
 function editorAddSegments(editor, geometry) {
   if (!geometry) return;
+  editorPushSnapshot(editor);
   geometry.forEach((seg) => editor.segments.push(seg.map((p) => [p[0], p[1]])));
   editor.freshSegment = true;
+  editor.selectedPoint = null;
   editor.startAnchor = null;
   editor.endAnchor = null;
   editorRedraw(editor);
@@ -1015,7 +1176,13 @@ function editorDistanceKm(editor) {
 
 function editorSetMode(editor, mode, pencilBtn, eraserBtn) {
   editor.mode = mode;
-  if (mode === "pencil") editor.freshSegment = true;
+  if (mode === "pencil") {
+    // Choosing the pencil starts a fresh stroke: any highlighted trail is
+    // deselected so the next tap begins a new line (or selects a trail).
+    editor.freshSegment = true;
+    editor.selectedPoint = null;
+    editorDrawSelection(editor);
+  }
   pencilBtn.classList.toggle("bg-pine", mode === "pencil");
   pencilBtn.classList.toggle("text-white", mode === "pencil");
   eraserBtn.classList.toggle("bg-pine", mode === "eraser");
@@ -1136,7 +1303,7 @@ document.getElementById("createAddSavedBtn").addEventListener("click", () => {
   ensureCreateMap();
   openAddSavedTrailPicker((picked) => {
     editorAddSegments(createEditor, picked.geometry);
-    document.getElementById("createHint").textContent = `Added ${picked.name} — draw or erase to connect them.`;
+    document.getElementById("createHint").textContent = `Added ${picked.name} — tap a trail to select it, then tap near it to extend.`;
     updateCreateStats();
   }, document.getElementById("createMapWrap"));
 });
