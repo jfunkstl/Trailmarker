@@ -1108,7 +1108,7 @@ app.get("/api/usfs-trail-info", async (req, res) => {
       trailClass: first.trail_class || null,
       surface: first.trail_surface || null,
       managingOrg: first.admin_org || first.managing_org || null,
-      hikerAllowed: first.hiker_pedestrian_managed === "YES" || first.hiker_pedestrian_managed === 1,
+      hikerAllowed: Boolean(first.hiker_pedestrian_managed), // real data holds a season range like "01/01-12/31" when hikers are allowed, null otherwise
       miles: totalMiles > 0 ? Math.round(totalMiles * 10) / 10 : null,
     });
   } catch (err) {
@@ -1220,7 +1220,6 @@ app.get("/api/elevation", async (req, res) => {
 
   res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
 });
-
 // ---------------------------------------------------------------------------
 // GET /api/weather?lat=&lon=
 //
@@ -1633,6 +1632,156 @@ async function fetchWaTrails(swLat, swLon, neLat, neLon) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Oregon federal trail integrations -- USFS National Forest trails and BLM
+// trails. Oregon has no single statewide trail dataset like Washington's RCO
+// layer, but a large share of its trail miles are on National Forest and BLM
+// land, and both agencies publish free, token-free layers.
+//
+// Both layers verified directly against the live services via real sample
+// records before writing this (the BLM "Public_Trails" ArcGIS Online layer
+// was rejected -- it requires a login token).
+//
+// Query format: f=json (Esri JSON, geometry.paths = [lon,lat] pairs) rather
+// than f=geojson, since that's the format the sample records were verified
+// in. outSR=4326 is requested on both; the USFS layer is natively NAD83
+// geographic (4269) and the BLM layer is Web Mercator (102100).
+//
+// Currently gated to Oregon only (small-steps rollout) -- widen the bounds
+// (or remove the gate) to turn either on for other states.
+// ---------------------------------------------------------------------------
+const OREGON_BOUNDS = { swLat: 41.9, swLon: -124.8, neLat: 46.35, neLon: -116.4 };
+function boundsOverlapOregon(swLat, swLon, neLat, neLon) {
+  return swLat <= OREGON_BOUNDS.neLat && neLat >= OREGON_BOUNDS.swLat &&
+    swLon <= OREGON_BOUNDS.neLon && neLon >= OREGON_BOUNDS.swLon;
+}
+
+// USFS stores names in ALL CAPS ("BIG SPRINGS"); show them in Title Case.
+function toTitleCase(str) {
+  return String(str || "").toLowerCase().replace(/(^|[\s\-\/(])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase());
+}
+
+// Esri JSON polyline paths are arrays of [lon,lat] -- flip to [lat,lon].
+function esriPathsToLatLon(geometry) {
+  const paths = geometry && Array.isArray(geometry.paths) ? geometry.paths : [];
+  return paths
+    .map((path) => path.map(([lon, lat]) => [lat, lon]))
+    .filter((seg) => seg.length >= 2);
+}
+function segmentsLengthKm(segCoordsList) {
+  return segCoordsList.reduce((sum, seg) => sum + wayLengthKm(seg.map(([lat, lon]) => ({ lat, lon }))), 0);
+}
+
+// --- USFS (National Forest System trails) ---
+// Verified fields: trail_name (often ALL CAPS), trail_no, trail_type (TERRA =
+// land trail), trail_surface, gis_miles, hiker_pedestrian_managed (a date
+// range like "01/01-12/31" when hikers are allowed, null otherwise).
+const USFS_TRAILS_URL = "https://apps.fs.usda.gov/ArcX/rest/services/EDW/EDW_TrailNFSPublish_01/MapServer/0/query";
+async function fetchUsfsTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapOregon(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const where = "trail_type='TERRA' AND hiker_pedestrian_managed IS NOT NULL";
+  const url = `${USFS_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=trail_name,trail_no,trail_surface,gis_miles,segment_length&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`USFS trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("USFS trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      const rawName = (a.trail_name || "").trim();
+      const trailNo = (a.trail_no || "").trim();
+      const name = rawName ? toTitleCase(rawName) : (trailNo ? `Trail #${trailNo}` : "");
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const miles = Number(a.gis_miles) || Number(a.segment_length) || 0;
+      const lenKm = miles > 0 ? miles * 1.60934 : segmentsLengthKm(segCoordsList);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: "Unknown", // USFS has trail class (1-5) but no hiking difficulty rating
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values());
+  } catch (err) {
+    console.error("USFS trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
+// --- BLM (National GTLF trails, Oregon) ---
+// Verified fields: ROUTE_PRMRY_NM (name), ADMIN_ST ("OR"), PLAN_ASSET_CLASS
+// ("Transportation System - Trail"), OBSRVE_SRFCE_TYPE. IMPORTANT: the real
+// sample record had GIS_MILES null and BLM_MILES -1, so those fields can't be
+// trusted -- length is computed from the geometry instead.
+const BLM_TRAILS_URL = "https://gis.blm.gov/arcgis/rest/services/transportation/BLM_Natl_GTLF_Public_Display/MapServer/7/query";
+async function fetchBlmTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapOregon(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const where = "ADMIN_ST='OR' AND PLAN_ASSET_CLASS LIKE '%Trail%'";
+  const url = `${BLM_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=ROUTE_PRMRY_NM,OBSRVE_SRFCE_TYPE&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`BLM trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("BLM trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      const name = (a.ROUTE_PRMRY_NM || "").trim();
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const lenKm = segmentsLengthKm(segCoordsList);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: Math.round(lenKm * 10) / 10,
+          difficulty: "Unknown", // BLM has no difficulty-rating field
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values());
+  } catch (err) {
+    console.error("BLM trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // Runs one Overpass query scoped to exactly the given bounds and returns
 // the parsed { trails, parks, areas } for that area alone. Extracted out of
 // the route handler so it can be called once per still-uncached grid cell,
@@ -1754,6 +1903,21 @@ out tags center;`.trim();
     waTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
   } catch (waErr) {
     console.error("WA RCO merge (map-pins) failed:", waErr.message || waErr);
+  }
+
+  // Merge in Oregon's federal trail data (National Forest + BLM) -- Oregon-
+  // gated inside each function, so these are no-ops for other states.
+  try {
+    const usfsTrails = await fetchUsfsTrails(swLat, swLon, neLat, neLon);
+    usfsTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (usfsErr) {
+    console.error("USFS merge (map-pins) failed:", usfsErr.message || usfsErr);
+  }
+  try {
+    const blmTrails = await fetchBlmTrails(swLat, swLon, neLat, neLon);
+    blmTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (blmErr) {
+    console.error("BLM merge (map-pins) failed:", blmErr.message || blmErr);
   }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
