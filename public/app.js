@@ -775,6 +775,11 @@ function makeEditor(map) {
     // the selected trail, and its segment is looked up fresh each time. When
     // two trails get joined, the merged segment still contains that
     // coordinate -- so the whole joined trail stays highlighted for free.
+    // True when the start and end pins were dropped on each other on a trail
+    // that is NOT a closed loop: they show as one half-green/half-blue pin at
+    // mergedAt, and NOTHING is added to the route (no connector line).
+    mergedPins: false,
+    mergedAt: null,
     selectedPoint: null,
     selectedCasing: null,
     selectedLayer: null,
@@ -957,8 +962,13 @@ function editorPushSnapshot(editor) {
     selectedPoint: editor.selectedPoint ? [editor.selectedPoint[0], editor.selectedPoint[1]] : null,
     startAnchor: editor.startAnchor ? [editor.startAnchor[0], editor.startAnchor[1]] : null,
     endAnchor: editor.endAnchor ? [editor.endAnchor[0], editor.endAnchor[1]] : null,
+    mergedPins: editor.mergedPins,
+    mergedAt: editor.mergedAt ? [editor.mergedAt[0], editor.mergedAt[1]] : null,
   });
   if (editor.undoStack.length > 50) editor.undoStack.shift();
+  // Any new edit un-merges the pins (a merge sets this back to true afterwards).
+  editor.mergedPins = false;
+  editor.mergedAt = null;
 }
 
 function editorRedraw(editor) {
@@ -1037,9 +1047,8 @@ function editorSnapToTrail(editor, latlng) {
 // Called when a start/end pin is released. which = "start" | "end" | "both"
 // ("both" is the half-green/half-blue pin of a loop, which moves as one).
 //  - Dropped on the OTHER pin: start and finish become the same point. On a
-//    closed loop that's a full lap from that point; on an open chain of
-//    trails it closes the loop with a straight connector from the end back
-//    to the start (the toast says how long the connector is).
+//    closed loop that's a full lap from that point; on an open trail the two
+//    pins just merge into one marker (no line is added, mileage unchanged).
 //  - Dropped on the trail: the pin moves to that spot on the trail.
 //  - Dropped anywhere else: nothing changes (the pin snaps back).
 function editorMoveAnchor(editor, which, dropLatLng) {
@@ -1053,22 +1062,26 @@ function editorMoveAnchor(editor, which, dropLatLng) {
     return Math.hypot(px.x - dropPx.x, px.y - dropPx.y) <= PIN_MERGE_RADIUS_PX;
   };
 
+  // Dragging the merged (half green / half blue) pin of an open trail pulls
+  // the two pins apart again, back onto the trail's two ends.
+  if (editor.mergedPins && which === "both" && !editorIsClosedRing(editor)) {
+    editorPushSnapshot(editor);
+    editor.startAnchor = null;
+    editor.endAnchor = null;
+    return true;
+  }
+
   const droppedOnOther = (which === "start" && isNear(endPt)) || (which === "end" && isNear(startPt));
   if (droppedOnOther) {
     const target = which === "start" ? [endPt[0], endPt[1]] : [startPt[0], startPt[1]];
     if (!editorIsClosedRing(editor)) {
-      if (editor.segments.length !== 1 || editor.segments[0].length < 3) {
-        showToast("Join the trails into one trail first, then drop the pins together to make a loop");
-        return false;
-      }
+      // Open trail: just merge the two pins into one marker where they were
+      // dropped. The route (and its mileage) is left exactly as it is --
+      // nothing is drawn or added.
       editorPushSnapshot(editor);
-      const seg = editor.segments[0];
-      const first = seg[0], last = seg[seg.length - 1];
-      const gapKm = geodesicKm(last[0], last[1], first[0], first[1]);
-      seg.push([first[0], first[1]]);
-      showToast(gapKm > 0.0005 ? `Loop closed — added a ${fmtDist(gapKm * 1000)} straight connector` : "Loop closed");
-      editor.startAnchor = target;
-      editor.endAnchor = target;
+      editor.mergedPins = true;
+      editor.mergedAt = target;
+      showToast("Start and finish set to the same point");
       return true;
     }
     editorPushSnapshot(editor);
@@ -1102,6 +1115,7 @@ function editorUpdateWaypoints(editor) {
   // half-blue pin; otherwise a green start pin and a blue end pin. Every pin
   // can be pressed, dragged along the trail, and released.
   const isOverlapping = startPt[0] === endPt[0] && startPt[1] === endPt[1];
+  const showMerged = editor.mergedPins && editor.mergedAt && !isOverlapping;
   const wire = (marker, which) => {
     marker.on("dragend", (e) => {
       editorMoveAnchor(editor, which, e.target.getLatLng());
@@ -1109,7 +1123,9 @@ function editorUpdateWaypoints(editor) {
     });
   };
 
-  if (isOverlapping) {
+  if (showMerged) {
+    wire(L.marker(editor.mergedAt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup), "both");
+  } else if (isOverlapping) {
     wire(L.marker(startPt, { icon: startEndSplitIcon, draggable: true }).addTo(editor.waypointGroup), "both");
   } else {
     wire(L.marker(startPt, { icon: startIcon, draggable: true }).addTo(editor.waypointGroup), "start");
@@ -1292,6 +1308,8 @@ function editorUndo(editor) {
   editor.selectedPoint = snapshot.selectedPoint;
   editor.startAnchor = snapshot.startAnchor;
   editor.endAnchor = snapshot.endAnchor;
+  editor.mergedPins = Boolean(snapshot.mergedPins);
+  editor.mergedAt = snapshot.mergedAt || null;
   editorRedraw(editor);
 }
 
@@ -1302,6 +1320,8 @@ function editorClear(editor) {
   editor.selectedPoint = null;
   editor.startAnchor = null;
   editor.endAnchor = null;
+  editor.mergedPins = false;
+  editor.mergedAt = null;
   editorRedraw(editor);
 }
 
