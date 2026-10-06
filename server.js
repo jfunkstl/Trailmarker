@@ -1220,6 +1220,7 @@ app.get("/api/elevation", async (req, res) => {
 
   res.status(502).json({ error: "Elevation data isn't available right now — both providers failed to respond." });
 });
+
 // ---------------------------------------------------------------------------
 // GET /api/weather?lat=&lon=
 //
@@ -1429,13 +1430,13 @@ async function fetchCotrexTrails(swLat, swLon, neLat, neLon) {
       const lenKm = (Number(props.length_mi_) || 0) * 1.60934;
       const existing = byName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segCoordsList.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         byName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: "Unknown", // COTREX has no verified difficulty-rating field equivalent to OSM's sac_scale
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -1444,7 +1445,7 @@ async function fetchCotrexTrails(swLat, swLon, neLat, neLon) {
         });
       }
     });
-    return Array.from(byName.values());
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("COTREX trails lookup failed:", err.message || err);
     return [];
@@ -1509,13 +1510,13 @@ async function fetchMdcTrails(swLat, swLon, neLat, neLon) {
       const lenKm = (Number(props.Miles) || 0) * 1.60934;
       const existing = byName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segCoordsList.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         byName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: "Unknown", // MDC has no difficulty-rating field equivalent to OSM's sac_scale
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -1524,7 +1525,7 @@ async function fetchMdcTrails(swLat, swLon, neLat, neLon) {
         });
       }
     });
-    return Array.from(byName.values());
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("MDC trails lookup failed:", err.message || err);
     return [];
@@ -1610,13 +1611,13 @@ async function fetchWaTrails(swLat, swLon, neLat, neLon) {
       const lenKm = (Number(props.segment_length_mi) || 0) * 1.60934;
       const existing = byName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segCoordsList.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         byName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: "Unknown", // the RCO database has no difficulty-rating field
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -1625,7 +1626,7 @@ async function fetchWaTrails(swLat, swLon, neLat, neLon) {
         });
       }
     });
-    return Array.from(byName.values());
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("WA RCO trails lookup failed:", err.message || err);
     return [];
@@ -1647,13 +1648,21 @@ async function fetchWaTrails(swLat, swLon, neLat, neLon) {
 // in. outSR=4326 is requested on both; the USFS layer is natively NAD83
 // geographic (4269) and the BLM layer is Web Mercator (102100).
 //
-// Currently gated to Oregon only (small-steps rollout) -- widen the bounds
-// (or remove the gate) to turn either on for other states.
+// Gated to the states listed in FEDERAL_TRAIL_STATES below (small-steps
+// rollout: Oregon, then California).
 // ---------------------------------------------------------------------------
-const OREGON_BOUNDS = { swLat: 41.9, swLon: -124.8, neLat: 46.35, neLon: -116.4 };
-function boundsOverlapOregon(swLat, swLon, neLat, neLon) {
-  return swLat <= OREGON_BOUNDS.neLat && neLat >= OREGON_BOUNDS.swLat &&
-    swLon <= OREGON_BOUNDS.neLon && neLon >= OREGON_BOUNDS.swLon;
+// States where the federal (USFS + BLM) trail layers are merged into the map.
+// Rolled out one state at a time -- add a state here (with its approximate
+// extent) to turn it on. Each code is the BLM layer's ADMIN_ST value.
+const FEDERAL_TRAIL_STATES = {
+  OR: { swLat: 41.9, swLon: -124.8, neLat: 46.35, neLon: -116.4 },
+  CA: { swLat: 32.5, swLon: -124.5, neLat: 42.05, neLon: -114.1 },
+};
+// Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
+function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
+  return Object.entries(FEDERAL_TRAIL_STATES)
+    .filter(([, b]) => swLat <= b.neLat && neLat >= b.swLat && swLon <= b.neLon && neLon >= b.swLon)
+    .map(([code]) => code);
 }
 
 // USFS stores names in ALL CAPS ("BIG SPRINGS"); show them in Title Case.
@@ -1678,7 +1687,7 @@ function segmentsLengthKm(segCoordsList) {
 // range like "01/01-12/31" when hikers are allowed, null otherwise).
 const USFS_TRAILS_URL = "https://apps.fs.usda.gov/ArcX/rest/services/EDW/EDW_TrailNFSPublish_01/MapServer/0/query";
 async function fetchUsfsTrails(swLat, swLon, neLat, neLon) {
-  if (!boundsOverlapOregon(swLat, swLon, neLat, neLon)) return [];
+  if (federalTrailStatesInView(swLat, swLon, neLat, neLon).length === 0) return [];
   const envelope = `${swLon},${swLat},${neLon},${neLat}`;
   const where = "trail_type='TERRA' AND hiker_pedestrian_managed IS NOT NULL";
   const url = `${USFS_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=trail_name,trail_no,trail_surface,gis_miles,segment_length&returnGeometry=true&outSR=4326&f=json`;
@@ -1706,13 +1715,13 @@ async function fetchUsfsTrails(swLat, swLon, neLat, neLon) {
       const lenKm = miles > 0 ? miles * 1.60934 : segmentsLengthKm(segCoordsList);
       const existing = byName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segCoordsList.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         byName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: "Unknown", // USFS has trail class (1-5) but no hiking difficulty rating
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -1721,7 +1730,7 @@ async function fetchUsfsTrails(swLat, swLon, neLat, neLon) {
         });
       }
     });
-    return Array.from(byName.values());
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("USFS trails lookup failed:", err.message || err);
     return [];
@@ -1735,9 +1744,10 @@ async function fetchUsfsTrails(swLat, swLon, neLat, neLon) {
 // trusted -- length is computed from the geometry instead.
 const BLM_TRAILS_URL = "https://gis.blm.gov/arcgis/rest/services/transportation/BLM_Natl_GTLF_Public_Display/MapServer/7/query";
 async function fetchBlmTrails(swLat, swLon, neLat, neLon) {
-  if (!boundsOverlapOregon(swLat, swLon, neLat, neLon)) return [];
+  const states = federalTrailStatesInView(swLat, swLon, neLat, neLon);
+  if (states.length === 0) return [];
   const envelope = `${swLon},${swLat},${neLon},${neLat}`;
-  const where = "ADMIN_ST='OR' AND PLAN_ASSET_CLASS LIKE '%Trail%'";
+  const where = `ADMIN_ST IN (${states.map((c) => `'${c}'`).join(",")}) AND PLAN_ASSET_CLASS LIKE '%Trail%'`;
   const url = `${BLM_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=ROUTE_PRMRY_NM,OBSRVE_SRFCE_TYPE&returnGeometry=true&outSR=4326&f=json`;
   try {
     const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
@@ -1760,13 +1770,13 @@ async function fetchBlmTrails(swLat, swLon, neLat, neLon) {
       const lenKm = segmentsLengthKm(segCoordsList);
       const existing = byName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segCoordsList.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         byName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: "Unknown", // BLM has no difficulty-rating field
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -1775,9 +1785,73 @@ async function fetchBlmTrails(swLat, swLon, neLat, neLon) {
         });
       }
     });
-    return Array.from(byName.values());
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("BLM trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
+// --- California State Parks (RoadsTrails_Public, layer 15) ---
+// Verified against the live service via real records. Notes from that data:
+//  - Native spatial reference is California Albers (3310), so outSR=4326 is
+//    requested to get plain lon/lat back.
+//  - One layer mixes roads, trails, and abandoned routes. ROUTECLASS values
+//    seen: State Park Trail, Other Agency Trail (the real trails), Motorized
+//    Trail, State Park Road, Local Road, Non-system Route (abandoned /
+//    decommissioned / planned routes), Not Determined. Only the two trail
+//    classes are kept, and trails whose use (FCC) is "Bicycle" only are
+//    skipped.
+//  - ROUTENAME is often blank (stored as a space) -- fall back to UNITNAME
+//    (the park name) so the mileage isn't lost, same approach as Missouri.
+//  - SEGLNGTH didn't match the real geometry length in the sample record, so
+//    length is computed from the geometry.
+//  - The layer is current as of January 2020.
+const CA_PARKS_TRAILS_URL = "https://services2.arcgis.com/AhxrK3F6WM8ECvDi/ArcGIS/rest/services/RoadsTrails_Public/FeatureServer/15/query";
+async function fetchCaStateParksTrails(swLat, swLon, neLat, neLon) {
+  if (!federalTrailStatesInView(swLat, swLon, neLat, neLon).includes("CA")) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const where = "ROUTECLASS IN ('State Park Trail','Other Agency Trail') AND (FCC <> 'Bicycle' OR FCC IS NULL)";
+  const url = `${CA_PARKS_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=ROUTENAME,UNITNAME,ROUTETYPE&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`CA State Parks trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("CA State Parks trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      const name = (a.ROUTENAME || "").trim() || (a.UNITNAME || "").trim();
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const lenKm = segmentsLengthKm(segCoordsList);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: lenKm,
+          difficulty: "Unknown", // no difficulty-rating field in this layer
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
+  } catch (err) {
+    console.error("CA State Parks trails lookup failed:", err.message || err);
     return [];
   }
 }
@@ -1841,13 +1915,13 @@ out tags center;`.trim();
       const segCoordsList = segs.map((seg) => seg.map((p) => [p.lat, p.lon]));
       const existing = trailsByName.get(name);
       if (existing) {
-        existing.distance_km = Math.round((existing.distance_km + lenKm) * 10) / 10;
+        existing.distance_km += lenKm;
         existing.segments += segs.length;
         existing.segmentsGeom.push(...segCoordsList);
       } else {
         trailsByName.set(name, {
           name,
-          distance_km: Math.round(lenKm * 10) / 10,
+          distance_km: lenKm,
           difficulty: difficultyFromTags(tags),
           lat: firstPt.lat,
           lon: firstPt.lon,
@@ -1905,8 +1979,9 @@ out tags center;`.trim();
     console.error("WA RCO merge (map-pins) failed:", waErr.message || waErr);
   }
 
-  // Merge in Oregon's federal trail data (National Forest + BLM) -- Oregon-
-  // gated inside each function, so these are no-ops for other states.
+  // Merge in federal trail data (National Forest + BLM) for the states in
+  // FEDERAL_TRAIL_STATES -- gated inside each function, so these are no-ops
+  // for other states.
   try {
     const usfsTrails = await fetchUsfsTrails(swLat, swLon, neLat, neLon);
     usfsTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
@@ -1919,6 +1994,12 @@ out tags center;`.trim();
   } catch (blmErr) {
     console.error("BLM merge (map-pins) failed:", blmErr.message || blmErr);
   }
+  try {
+    const caParksTrails = await fetchCaStateParksTrails(swLat, swLon, neLat, neLon);
+    caParksTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (caErr) {
+    console.error("CA State Parks merge (map-pins) failed:", caErr.message || caErr);
+  }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
     const totalPoints = t.segmentsGeom.reduce((s, seg) => s + seg.length, 0);
@@ -1928,7 +2009,7 @@ out tags center;`.trim();
       : t.segmentsGeom.map((seg) => decimate(seg, perSegBudget));
     return {
       name: t.name,
-      distance_km: t.distance_km,
+      distance_km: Math.round(t.distance_km * 10) / 10,
       difficulty: t.difficulty,
       lat: t.lat,
       lon: t.lon,
@@ -2043,7 +2124,7 @@ app.get("/api/map-pins", async (req, res) => {
       const mergeByName = (existingList, newList) => {
         const byName = new Map((existingList || []).map((item) => [item.name, item]));
         newList.forEach((item) => { if (!byName.has(item.name)) byName.set(item.name, item); });
-        return Array.from(byName.values());
+        return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
       };
       await Promise.all(missCells.map(async ({ cellKey, data: existingPartial }) => {
         const bounds = boundsForGridCell(cellKey);
