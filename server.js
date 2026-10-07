@@ -1657,6 +1657,7 @@ async function fetchWaTrails(swLat, swLon, neLat, neLon) {
 const FEDERAL_TRAIL_STATES = {
   OR: { swLat: 41.9, swLon: -124.8, neLat: 46.35, neLon: -116.4 },
   CA: { swLat: 32.5, swLon: -124.5, neLat: 42.05, neLon: -114.1 },
+  ID: { swLat: 41.95, swLon: -117.3, neLat: 49.05, neLon: -110.99 },
 };
 // Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
 function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
@@ -1856,6 +1857,86 @@ async function fetchCaStateParksTrails(swLat, swLon, neLat, neLon) {
   }
 }
 
+// --- Nevada (NDOR statewide non-motorized trails, SCORP_NonMoto_Trails_Master) ---
+// Nevada Division of Outdoor Recreation's statewide layer of non-motorized
+// paved and unpaved trails, aggregated from federal, state, county, and city
+// sources. Verified via a real record. Notes from that data:
+//  - Native spatial reference is UTM zone 11N (26911), so outSR=4326 is
+//    requested to get plain lon/lat back.
+//  - Use flags are the STRINGS "1"/"0" (hiking, walking, ...). Trails are
+//    kept when hiking or walking is "1".
+//  - trailname can be blank: fall back to trailname2, then systemname.
+//  - miles matched the geometry length in the sample; it's used when it's a
+//    positive number, otherwise length is computed from the geometry.
+//  - difficulty was "Easy" in the sample; other values I haven't seen are
+//    mapped by keyword (moderate / hard words) and fall back to Unknown.
+//  - status was "Open"; routes whose status says closed / proposed / planned /
+//    abandoned are skipped.
+const NV_TRAILS_URL = "https://arcgis.water.nv.gov/arcgis/rest/services/Hosted/SCORP_NonMoto_Trails_Master/FeatureServer/0/query";
+const NEVADA_BOUNDS = { swLat: 34.9, swLon: -120.05, neLat: 42.05, neLon: -113.95 };
+function boundsOverlapNevada(swLat, swLon, neLat, neLon) {
+  return swLat <= NEVADA_BOUNDS.neLat && neLat >= NEVADA_BOUNDS.swLat &&
+    swLon <= NEVADA_BOUNDS.neLon && neLon >= NEVADA_BOUNDS.swLon;
+}
+function nvDifficulty(raw) {
+  const d = String(raw || "").toLowerCase();
+  if (/easy|beginner/.test(d)) return "Easy";
+  if (/moderate|intermediate/.test(d)) return "Moderate";
+  if (/hard|difficult|strenuous|expert|advanced/.test(d)) return "Strenuous";
+  return "Unknown";
+}
+async function fetchNvTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapNevada(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const where = "hiking = '1' OR walking = '1'";
+  const url = `${NV_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=trailname,trailname2,systemname,trailsurface,difficulty,miles,status&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`NV trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("NV trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      if (/clos|propos|planned|abandon|decommission/i.test(String(a.status || ""))) return;
+      const pick = (v) => (typeof v === "string" ? v.trim() : "");
+      const name = pick(a.trailname) || pick(a.trailname2) || pick(a.systemname);
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const miles = Number(a.miles);
+      const lenKm = miles > 0 ? miles * 1.609344 : segmentsLengthKm(segCoordsList);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: lenKm,
+          difficulty: nvDifficulty(a.difficulty),
+          surface: pick(a.trailsurface) || null,
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
+  } catch (err) {
+    console.error("NV trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // Runs one Overpass query scoped to exactly the given bounds and returns
 // the parsed { trails, parks, areas } for that area alone. Extracted out of
 // the route handler so it can be called once per still-uncached grid cell,
@@ -1999,6 +2080,12 @@ out tags center;`.trim();
     caParksTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
   } catch (caErr) {
     console.error("CA State Parks merge (map-pins) failed:", caErr.message || caErr);
+  }
+  try {
+    const nvTrails = await fetchNvTrails(swLat, swLon, neLat, neLon);
+    nvTrails.forEach((t) => { if (!trailsByName.has(t.name)) trailsByName.set(t.name, t); });
+  } catch (nvErr) {
+    console.error("NV merge (map-pins) failed:", nvErr.message || nvErr);
   }
 
   const trails = Array.from(trailsByName.values()).map((t) => {
