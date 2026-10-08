@@ -223,3 +223,77 @@ button, a, input, select {
   .hk-walk { opacity: 0; }
   .hk-look { opacity: 1; }
 }
+
+/* =============================================================
+   Night-mode Milky Way header backdrop
+   Covers everything from the top of the page down to the dashed contour
+   line (title, theme button, and the hiker all sit on top of it). Only shown
+   in dark ("Night Hike") mode. Original artwork, built from layered CSS
+   gradients: gold glow on the left, violet in the middle, crimson on the
+   right, a dark dust lane crossing it, plus stars that each twinkle on
+   their own slow, randomly-offset timer -- so only one or two flash at once.
+   ============================================================= */
+.sky { position: relative; margin-bottom: 0.5rem; }
+.sky > header, .sky > .hiker-track { position: relative; z-index: 1; }
+
+.night-sky {
+  display: none;
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  bottom: 8px;            /* stops at the top of the dashed line */
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    linear-gradient(112deg, transparent 38%, rgba(8, 8, 22, 0.55) 47%, rgba(8, 8, 22, 0.15) 55%, transparent 62%),
+    radial-gradient(ellipse 52% 95% at 6% 60%, rgba(244, 190, 110, 0.60), transparent 72%),
+    radial-gradient(ellipse 38% 55% at 24% 28%, rgba(255, 226, 168, 0.34), transparent 68%),
+    radial-gradient(ellipse 46% 85% at 52% 18%, rgba(92, 90, 172, 0.58), transparent 72%),
+    radial-gradient(ellipse 34% 60% at 68% 20%, rgba(70, 60, 140, 0.45), transparent 70%),
+    radial-gradient(ellipse 48% 95% at 92% 72%, rgba(206, 58, 92, 0.62), transparent 72%),
+    radial-gradient(ellipse 30% 50% at 72% 92%, rgba(232, 92, 112, 0.46), transparent 70%),
+    linear-gradient(180deg, #0c0f1f 0%, #121327 60%, #1a1426 100%);
+}
+.dark .night-sky { display: block; }
+
+/* faint fade at the very bottom so it settles into the dashed line */
+.night-sky::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 18px;
+  background: linear-gradient(180deg, transparent, rgba(12, 14, 28, 0.55));
+}
+
+/* ordinary stars: a dim dot that flashes bright for a moment, once per cycle */
+.night-sky i {
+  position: absolute;
+  width: var(--s);
+  height: var(--s);
+  border-radius: 50%;
+  background: var(--c, #fff);
+  box-shadow: 0 0 calc(var(--s) * 3) var(--c, #fff);
+  opacity: 0.35;
+  animation: ts-twinkle var(--d) ease-in-out var(--t) infinite;
+}
+/* a few bigger stars with light spikes, like bright stars in a telescope image */
+.night-sky b {
+  position: absolute;
+  width: var(--s);
+  height: var(--s);
+  margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+  opacity: 0.4;
+  background:
+    linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.95), transparent) center / 100% 1px no-repeat,
+    linear-gradient(0deg, transparent, rgba(255, 255, 255, 0.95), transparent) center / 1px 100% no-repeat,
+    radial-gradient(circle, #fff 0 1.5px, rgba(255, 255, 255, 0.35) 3px, transparent 6px);
+  animation: ts-twinkle var(--d) ease-in-out var(--t) infinite;
+}
+@keyframes ts-twinkle {
+  0%, 86%, 100% { opacity: 0.35; transform: scale(1); }
+  93%           { opacity: 1;    transform: scale(1.7); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .night-sky i, .night-sky b { animation: none; }
+}
