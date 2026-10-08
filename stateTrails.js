@@ -329,6 +329,7 @@ const FEDERAL_TRAIL_STATES = {
   OR: { swLat: 41.9, swLon: -124.8, neLat: 46.35, neLon: -116.4 },
   CA: { swLat: 32.5, swLon: -124.5, neLat: 42.05, neLon: -114.1 },
   ID: { swLat: 41.95, swLon: -117.3, neLat: 49.05, neLon: -110.99 },
+  MT: { swLat: 44.3, swLon: -116.1, neLat: 49.05, neLon: -103.95 },
 };
 // Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
 function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
