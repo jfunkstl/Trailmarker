@@ -330,6 +330,7 @@ const FEDERAL_TRAIL_STATES = {
   CA: { swLat: 32.5, swLon: -124.5, neLat: 42.05, neLon: -114.1 },
   ID: { swLat: 41.95, swLon: -117.3, neLat: 49.05, neLon: -110.99 },
   MT: { swLat: 44.3, swLon: -116.1, neLat: 49.05, neLon: -103.95 },
+  WY: { swLat: 40.95, swLon: -111.1, neLat: 45.05, neLon: -104.0 },
 };
 // Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
 function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
@@ -682,6 +683,101 @@ async function fetchAzTrails(swLat, swLon, neLat, neLon) {
 }
 
 // ---------------------------------------------------------------------------
+// National Park Service trails (NPS_Public_Trails) -- every NPS unit in the US
+// (Yellowstone, Glacier, Grand Teton, Yosemite, ...), not tied to one state.
+// Verified via a real record plus the layer's full list of TRLTYPE / TRLUSE
+// values. What that data showed, and how it's handled:
+//  - Native spatial reference is Web Mercator (102100), so outSR=4326 is
+//    requested to get plain lon/lat back.
+//  - There's no mile-length field (Shape__Length is in odd units), so length
+//    is computed from the geometry.
+//  - TRLNAME is often blank (stored as a space). Unnamed segments are skipped
+//    rather than lumped under the park's name, which would merge every
+//    unnamed path in the park into one huge fake "trail".
+//  - TRLTYPE mixes real trails ("Standard Terra Trail", "Park Trail", "Trail",
+//    "Pedestrian Path", numeric "2", "Unknown") with things that aren't hiking
+//    trails: Water Trail, Snow Trail, Ferry Route, Sidewalk, Steps, and the
+//    numeric "4" (watercraft). Those are excluded in the query.
+//  - TRLUSE is free text with dozens of spellings ("Hiker/Pedestrian",
+//    "Hike | Bike", "Hiking & Biking", "Pedestrian - No Pets", "Non-Motorized",
+//    "Unknown", ...). A trail is kept when its use mentions hiking / walking /
+//    pedestrian / foot, or is unspecific (Unknown, blank, Non-Motorized,
+//    Multi-Use, Interpretive, ADA, ...). It's dropped when the use names only
+//    bikes, motor vehicles, horses/pack stock, dog sleds, snow or water.
+//  - TRLSTATUS was "Existing"; proposed / planned / abandoned style statuses,
+//    and anything marked restricted or not for public display, are skipped.
+// ---------------------------------------------------------------------------
+const NPS_TRAILS_URL = "https://mapservices.nps.gov/arcgis/rest/services/NationalDatasets/NPS_Public_Trails/FeatureServer/0/query";
+// Rough extent of the US including Alaska, Hawaii, and Puerto Rico -- only used
+// to skip the call for viewports outside the country.
+const US_BOUNDS = { swLat: 17.5, swLon: -180, neLat: 72, neLon: -64.5 };
+function boundsOverlapUs(swLat, swLon, neLat, neLon) {
+  return swLat <= US_BOUNDS.neLat && neLat >= US_BOUNDS.swLat &&
+    swLon <= US_BOUNDS.neLon && neLon >= US_BOUNDS.swLon;
+}
+function npsUseAllowsFoot(rawUse) {
+  const use = String(rawUse || "");
+  if (/hik|pedestr|pedetr|pedstr|foot|walk/i.test(use)) return true;   // incl. common misspellings seen in the data
+  if (/non[- ]?motor/i.test(use)) return true;
+  if (/bicycle|bike|motor|atv|all-terrain|four-wheel|pack|saddle|horse|equestrian|dog sled|snowmobile|ferry|watercraft|paddl|cross-country|xcski/i.test(use)) return false;
+  return true; // Unknown, blank, Multi-Use, Interpretive, ADA, Connector, ...
+}
+async function fetchNpsTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapUs(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const where = "TRLTYPE NOT IN ('Water Trail','Snow Trail','Ferry Route','Sidewalk','Steps','4') OR TRLTYPE IS NULL";
+  const url = `${NPS_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=TRLNAME,TRLALTNAME,MAPLABEL,TRLSTATUS,TRLSURFACE,TRLUSE,PUBLICDISPLAY,DATAACCESS&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`NPS trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("NPS trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      if (/propos|planned|abandon|decommission|closed|removed|former/i.test(String(a.TRLSTATUS || ""))) return;
+      if (/restrict/i.test(String(a.DATAACCESS || "")) && !/^\s*unrestricted\s*$/i.test(String(a.DATAACCESS || ""))) return;
+      if (/\b(not|no|internal|private)\b/i.test(String(a.PUBLICDISPLAY || ""))) return;
+      if (!npsUseAllowsFoot(a.TRLUSE)) return;
+      const pick = (v) => (typeof v === "string" ? v.trim() : "");
+      const name = pick(a.TRLNAME) || pick(a.TRLALTNAME) || pick(a.MAPLABEL);
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const lenKm = segmentsLengthKm(segCoordsList);
+      const surface = pick(a.TRLSURFACE);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: lenKm,
+          difficulty: "Unknown", // no difficulty field in this layer
+          surface: surface && !/^unknown$/i.test(surface) ? surface : null,
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
+  } catch (err) {
+    console.error("NPS trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Runs every state source for the viewport (in parallel) and returns one
 // combined list, in priority order -- earlier sources win when two have the
 // same trail name. Each source already returns [] when the viewport isn't in
@@ -697,6 +793,7 @@ export async function fetchStateTrails(swLat, swLon, neLat, neLon) {
     ["CA State Parks", fetchCaStateParksTrails],
     ["NV", fetchNvTrails],
     ["AZ", fetchAzTrails],
+    ["NPS", fetchNpsTrails],
   ];
   const results = await Promise.all(
     sources.map(async ([label, fn]) => {
