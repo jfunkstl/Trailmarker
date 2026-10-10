@@ -297,3 +297,124 @@ button, a, input, select {
 @media (prefers-reduced-motion: reduce) {
   .night-sky i, .night-sky b { animation: none; }
 }
+
+/* =============================================================
+   Day-mode sunrise backdrop (light "Daylight" mode only)
+   Same area as the night sky: top of the page down to the dashed line,
+   behind the title and the hiker. Original artwork inspired by a mountain
+   sunrise above a sea of clouds: blue sky fading to a golden horizon, thin
+   wispy clouds high up, and three layers of puffy clouds that drift slowly
+   at different speeds (the nearer, the faster) for a bit of depth.
+   Everything is CSS; the drifting uses transforms so it stays smooth.
+   ============================================================= */
+.day-sky {
+  position: absolute;
+  left: 0; right: 0; top: 0;
+  bottom: 8px;            /* stops at the top of the dashed line */
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: linear-gradient(180deg, #5aa1dc 0%, #8dc5ea 32%, #c8e0ee 50%, #f9dcab 68%, #f7bd6b 83%, #f3a24c 100%);
+}
+.dark .day-sky { display: none; }
+.day-sky span { position: absolute; display: block; }
+
+/* low sun glow behind the cloud sea */
+.ds-glow {
+  inset: 0;
+  background: radial-gradient(ellipse 46% 40% at 50% 84%, rgba(255, 221, 130, 0.9), rgba(255, 176, 84, 0.38) 46%, transparent 76%);
+}
+
+/* thin high clouds -- long soft streaks that slide sideways */
+.ds-cirrus {
+  left: 0;
+  height: 62px;
+  background-repeat: repeat-x;
+  background-size: var(--tile) 62px;
+  width: calc(100% + var(--tile));
+  animation: ds-slide var(--dur) linear infinite;
+}
+.ds-c1 {
+  --tile: 640px; --dur: 170s;
+  top: 6%;
+  background-image:
+    radial-gradient(ellipse 150px 9px at 140px 22px, rgba(255, 255, 255, 0.78), transparent 72%),
+    radial-gradient(ellipse 210px 7px at 360px 44px, rgba(255, 232, 232, 0.62), transparent 72%),
+    radial-gradient(ellipse 120px 6px at 540px 28px, rgba(255, 255, 255, 0.55), transparent 72%);
+}
+.ds-c2 {
+  --tile: 520px; --dur: 120s;
+  top: 26%;
+  background-image:
+    radial-gradient(ellipse 170px 8px at 130px 26px, rgba(255, 244, 236, 0.7), transparent 72%),
+    radial-gradient(ellipse 110px 6px at 340px 12px, rgba(255, 255, 255, 0.5), transparent 72%),
+    radial-gradient(ellipse 140px 7px at 440px 46px, rgba(255, 226, 214, 0.55), transparent 72%);
+}
+
+/* distant mountain tops peeking out above the clouds */
+.ds-ridge {
+  left: 0; right: 0; bottom: 40px;
+  height: 64px;
+  opacity: 0.5;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 80' preserveAspectRatio='none'><path d='M0 80 L0 42 L28 24 L54 38 L90 14 L130 46 L170 62 L230 64 L272 50 L312 30 L346 8 L372 24 L400 12 L400 80 Z' fill='%233b4a6b'/></svg>") center bottom / 100% 100% no-repeat;
+}
+
+/* sea of clouds: three rows of puffs, back to front */
+.ds-sea {
+  left: 0;
+  bottom: 0;
+  width: calc(100% + var(--tile));
+  background-repeat: repeat-x;
+  background-size: var(--tile) var(--th);
+  background-position: 0 0;
+  animation: ds-slide var(--dur) linear infinite;
+}
+.ds-sea::after {            /* solid body under the puffs */
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: var(--base);
+  background: var(--body);
+}
+.ds-far {
+  --tile: 360px; --th: 64px; --dur: 130s; --base: 24px; --body: #98a9cd;
+  height: 80px;
+  background-image:
+    radial-gradient(circle at 50px 40px, #98a9cd 0 22px, transparent 30px),
+    radial-gradient(circle at 120px 34px, #98a9cd 0 28px, transparent 36px),
+    radial-gradient(circle at 200px 42px, #98a9cd 0 24px, transparent 32px),
+    radial-gradient(circle at 280px 36px, #98a9cd 0 26px, transparent 34px),
+    radial-gradient(circle at 318px 44px, #98a9cd 0 16px, transparent 24px);
+}
+.ds-mid {
+  --tile: 300px; --th: 66px; --dur: 85s; --base: 22px; --body: #cbd2e6;
+  height: 66px;
+  background-image:
+    radial-gradient(circle at 45px 42px, #cbd2e6 0 24px, transparent 32px),
+    radial-gradient(circle at 105px 34px, #cbd2e6 0 28px, transparent 36px),
+    radial-gradient(circle at 170px 44px, #cbd2e6 0 22px, transparent 30px),
+    radial-gradient(circle at 235px 36px, #cbd2e6 0 26px, transparent 34px);
+}
+.ds-near {
+  --tile: 260px; --th: 70px; --dur: 58s; --base: 18px; --body: #fbe9e4;
+  height: 54px;
+  background-image:
+    radial-gradient(circle at 42px 46px, #fbe9e4 0 24px, transparent 32px),
+    radial-gradient(circle at 100px 38px, #fbe9e4 0 28px, transparent 36px),
+    radial-gradient(circle at 160px 48px, #fbe9e4 0 22px, transparent 30px),
+    radial-gradient(circle at 215px 40px, #fbe9e4 0 20px, transparent 28px);
+}
+
+/* slide exactly one tile so the loop is seamless */
+@keyframes ds-slide {
+  from { transform: translateX(0); }
+  to   { transform: translateX(calc(var(--tile) * -1)); }
+}
+
+/* light mode only: keep the title and tagline readable over the sky */
+html:not(.dark) .sky header h1 { text-shadow: 0 1px 10px rgba(255, 255, 255, 0.45); }
+html:not(.dark) .sky header p  { opacity: 0.85; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-cirrus, .ds-sea { animation: none; }
+}
