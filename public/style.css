@@ -303,8 +303,8 @@ button, a, input, select {
    Same area as the night sky: top of the page down to the dashed line,
    behind the title and the hiker. Original artwork inspired by a mountain
    sunrise above a sea of clouds: blue sky fading to a golden horizon, thin
-   wispy clouds high up, and three layers of puffy clouds that drift slowly
-   at different speeds (the nearer, the faster) for a bit of depth.
+   wispy clouds high up that drift slowly, and distant mountains along the
+   bottom.
    Everything is CSS; the drifting uses transforms so it stays smooth.
    ============================================================= */
 .day-sky {
@@ -351,58 +351,12 @@ button, a, input, select {
     radial-gradient(ellipse 140px 7px at 440px 46px, rgba(255, 226, 214, 0.55), transparent 72%);
 }
 
-/* distant mountain tops peeking out above the clouds */
+/* distant mountains along the bottom, under the wispy clouds */
 .ds-ridge {
-  left: 0; right: 0; bottom: 40px;
-  height: 64px;
-  opacity: 0.5;
-  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 80' preserveAspectRatio='none'><path d='M0 80 L0 42 L28 24 L54 38 L90 14 L130 46 L170 62 L230 64 L272 50 L312 30 L346 8 L372 24 L400 12 L400 80 Z' fill='%233b4a6b'/></svg>") center bottom / 100% 100% no-repeat;
-}
-
-/* sea of clouds: three rows of puffs, back to front */
-.ds-sea {
-  left: 0;
-  bottom: 0;
-  width: calc(100% + var(--tile));
-  background-repeat: repeat-x;
-  background-size: var(--tile) var(--th);
-  background-position: 0 0;
-  animation: ds-slide var(--dur) linear infinite;
-}
-.ds-sea::after {            /* solid body under the puffs */
-  content: "";
-  position: absolute;
   left: 0; right: 0; bottom: 0;
-  height: var(--base);
-  background: var(--body);
-}
-.ds-far {
-  --tile: 360px; --th: 64px; --dur: 130s; --base: 24px; --body: #98a9cd;
-  height: 80px;
-  background-image:
-    radial-gradient(circle at 50px 40px, #98a9cd 0 22px, transparent 30px),
-    radial-gradient(circle at 120px 34px, #98a9cd 0 28px, transparent 36px),
-    radial-gradient(circle at 200px 42px, #98a9cd 0 24px, transparent 32px),
-    radial-gradient(circle at 280px 36px, #98a9cd 0 26px, transparent 34px),
-    radial-gradient(circle at 318px 44px, #98a9cd 0 16px, transparent 24px);
-}
-.ds-mid {
-  --tile: 300px; --th: 66px; --dur: 85s; --base: 22px; --body: #cbd2e6;
-  height: 66px;
-  background-image:
-    radial-gradient(circle at 45px 42px, #cbd2e6 0 24px, transparent 32px),
-    radial-gradient(circle at 105px 34px, #cbd2e6 0 28px, transparent 36px),
-    radial-gradient(circle at 170px 44px, #cbd2e6 0 22px, transparent 30px),
-    radial-gradient(circle at 235px 36px, #cbd2e6 0 26px, transparent 34px);
-}
-.ds-near {
-  --tile: 260px; --th: 70px; --dur: 58s; --base: 18px; --body: #fbe9e4;
-  height: 54px;
-  background-image:
-    radial-gradient(circle at 42px 46px, #fbe9e4 0 24px, transparent 32px),
-    radial-gradient(circle at 100px 38px, #fbe9e4 0 28px, transparent 36px),
-    radial-gradient(circle at 160px 48px, #fbe9e4 0 22px, transparent 30px),
-    radial-gradient(circle at 215px 40px, #fbe9e4 0 20px, transparent 28px);
+  height: 84px;
+  opacity: 0.62;
+  background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 80' preserveAspectRatio='none'><path d='M0 80 L0 42 L28 24 L54 38 L90 14 L130 46 L170 62 L230 64 L272 50 L312 30 L346 8 L372 24 L400 12 L400 80 Z' fill='%233b4a6b'/></svg>") center bottom / 100% 100% no-repeat;
 }
 
 /* slide exactly one tile so the loop is seamless */
@@ -416,5 +370,5 @@ html:not(.dark) .sky header h1 { text-shadow: 0 1px 10px rgba(255, 255, 255, 0.4
 html:not(.dark) .sky header p  { opacity: 0.85; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ds-cirrus, .ds-sea { animation: none; }
+  .ds-cirrus { animation: none; }
 }
