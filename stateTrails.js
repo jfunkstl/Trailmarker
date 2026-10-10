@@ -708,12 +708,17 @@ async function fetchAzTrails(swLat, swLon, neLat, neLon) {
 //    and anything marked restricted or not for public display, are skipped.
 // ---------------------------------------------------------------------------
 const NPS_TRAILS_URL = "https://mapservices.nps.gov/arcgis/rest/services/NationalDatasets/NPS_Public_Trails/FeatureServer/0/query";
-// Rough extent of the US including Alaska, Hawaii, and Puerto Rico -- only used
-// to skip the call for viewports outside the country.
-const US_BOUNDS = { swLat: 17.5, swLon: -180, neLat: 72, neLon: -64.5 };
+// Rough boxes around the places NPS manages trails (lower 48, Alaska, Hawaii,
+// Puerto Rico / Virgin Islands) -- only used to skip the call for viewports
+// elsewhere (e.g. Canada, Mexico, open ocean).
+const NPS_REGIONS = [
+  { swLat: 24.3, swLon: -125.2, neLat: 49.6, neLon: -66.8 },   // lower 48
+  { swLat: 51.0, swLon: -180.0, neLat: 71.6, neLon: -129.9 },  // Alaska
+  { swLat: 18.7, swLon: -160.8, neLat: 22.4, neLon: -154.6 },  // Hawaii
+  { swLat: 17.6, swLon: -67.5, neLat: 18.7, neLon: -64.5 },    // Puerto Rico / USVI
+];
 function boundsOverlapUs(swLat, swLon, neLat, neLon) {
-  return swLat <= US_BOUNDS.neLat && neLat >= US_BOUNDS.swLat &&
-    swLon <= US_BOUNDS.neLon && neLon >= US_BOUNDS.swLon;
+  return NPS_REGIONS.some((b) => swLat <= b.neLat && neLat >= b.swLat && swLon <= b.neLon && neLon >= b.swLon);
 }
 function npsUseAllowsFoot(rawUse) {
   const use = String(rawUse || "");
