@@ -331,6 +331,7 @@ const FEDERAL_TRAIL_STATES = {
   ID: { swLat: 41.95, swLon: -117.3, neLat: 49.05, neLon: -110.99 },
   MT: { swLat: 44.3, swLon: -116.1, neLat: 49.05, neLon: -103.95 },
   WY: { swLat: 40.95, swLon: -111.1, neLat: 45.05, neLon: -104.0 },
+  UT: { swLat: 36.95, swLon: -114.1, neLat: 42.05, neLon: -108.95 },
 };
 // Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
 function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
@@ -551,7 +552,7 @@ function boundsOverlapNevada(swLat, swLon, neLat, neLon) {
   return swLat <= NEVADA_BOUNDS.neLat && neLat >= NEVADA_BOUNDS.swLat &&
     swLon <= NEVADA_BOUNDS.neLon && neLon >= NEVADA_BOUNDS.swLon;
 }
-function nvDifficulty(raw) {
+function ratingFromText(raw) {
   const d = String(raw || "").toLowerCase();
   if (/easy|beginner/.test(d)) return "Easy";
   if (/moderate|intermediate/.test(d)) return "Moderate";
@@ -594,7 +595,7 @@ async function fetchNvTrails(swLat, swLon, neLat, neLon) {
         byName.set(name, {
           name,
           distance_km: lenKm,
-          difficulty: nvDifficulty(a.difficulty),
+          difficulty: ratingFromText(a.difficulty),
           surface: pick(a.trailsurface) || null,
           lat: segCoordsList[0][0][0],
           lon: segCoordsList[0][0][1],
@@ -678,6 +679,93 @@ async function fetchAzTrails(swLat, swLon, neLat, neLon) {
     return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
   } catch (err) {
     console.error("AZ trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
+// --- Utah (UGRC "Utah Trails and Pathways", TrailsAndPathways layer 0) ---
+// The state's recreational trails layer (20,000+ miles, names and allowed
+// uses; UGRC calls it a work in progress, so the National Forest / BLM / NPS
+// sources still fill gaps). Verified via a real record:
+//  - Native spatial reference is Web Mercator (102100), so outSR=4326 is
+//    requested to get plain lon/lat back.
+//  - No mile-length field, so length is computed from the geometry.
+//  - Name is PrimaryName (fall back to SystemName, then RecreationArea).
+//  - CartoCode is the real classification (the distinct values were listed):
+//      1 Hiking Only, 2 Hiking and Biking, 3 Paved Shared Use, 4 Road-concurrent,
+//      5 Biking Only, 6 Equestrian Primary, 7 Steps, 8 Bridge/Tunnel, 9 Link.
+//    Kept: 1, 2, 3 and 6 (hikers can use equestrian trails). Dropped: 5 (bike
+//    only), 4 (runs along a road), and the short 7 / 8 / 9 pieces. DesignatedUses
+//    ("Pedestrian" / "Multiuse" / "Bike") often disagrees with CartoCode (e.g.
+//    "5 - Biking Only" with "Pedestrian"), so CartoCode wins; DesignatedUses
+//    is only consulted when CartoCode is blank, where a bike-only use is dropped.
+//    Roads (Class) and non-existing routes (Status) are skipped too.
+//  - HikeDifficulty ("Intermediate") is a real rating: mapped to Easy /
+//    Moderate / Strenuous by keyword; anything unrecognized stays Unknown.
+const UT_TRAILS_URL = "https://services1.arcgis.com/99lidPhWCzftIe9K/ArcGIS/rest/services/TrailsAndPathways/FeatureServer/0/query";
+const UTAH_BOUNDS = { swLat: 36.95, swLon: -114.1, neLat: 42.05, neLon: -108.95 };
+function boundsOverlapUtah(swLat, swLon, neLat, neLon) {
+  return swLat <= UTAH_BOUNDS.neLat && neLat >= UTAH_BOUNDS.swLat &&
+    swLon <= UTAH_BOUNDS.neLon && neLon >= UTAH_BOUNDS.swLon;
+}
+function utUseAllowsFoot(designatedUses, cartoCode) {
+  const code = parseInt(String(cartoCode || "").trim(), 10);   // "2 - Hiking and Biking Allowed" -> 2
+  if (!Number.isNaN(code)) return code === 1 || code === 2 || code === 3 || code === 6;
+  const use = String(designatedUses || "");                    // no usable CartoCode: fall back to DesignatedUses
+  if (/bike|bicycl/i.test(use) && !/pedestr|multi|hik/i.test(use)) return false;
+  return true;
+}
+async function fetchUtTrails(swLat, swLon, neLat, neLon) {
+  if (!boundsOverlapUtah(swLat, swLon, neLat, neLon)) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  // Filtering in the query keeps bike-only / road-concurrent pieces from
+  // using up the 2000-feature limit in busy areas like Moab.
+  const where = "(UPPER(Status) = 'EXISTING' OR Status IS NULL) AND (CartoCode LIKE '1%' OR CartoCode LIKE '2%' OR CartoCode LIKE '3%' OR CartoCode LIKE '6%' OR CartoCode IS NULL OR CartoCode = ' ')";
+  const url = `${UT_TRAILS_URL}?where=${encodeURIComponent(where)}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=PrimaryName,SystemName,RecreationArea,DesignatedUses,CartoCode,SurfaceType,Class,HikeDifficulty,Status&returnGeometry=true&outSR=4326&f=json`;
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`UT trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("UT trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byName = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      if (/road|street|highway/i.test(String(a.Class || ""))) return;
+      if (/propos|planned|abandon|closed|decommission/i.test(String(a.Status || ""))) return;
+      if (!utUseAllowsFoot(a.DesignatedUses, a.CartoCode)) return;
+      const pick = (v) => (typeof v === "string" ? v.trim() : "");
+      const name = pick(a.PrimaryName) || pick(a.SystemName) || pick(a.RecreationArea);
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const lenKm = segmentsLengthKm(segCoordsList);
+      const existing = byName.get(name);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        byName.set(name, {
+          name,
+          distance_km: lenKm,
+          difficulty: ratingFromText(a.HikeDifficulty),
+          surface: pick(a.SurfaceType) || null,
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byName.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
+  } catch (err) {
+    console.error("UT trails lookup failed:", err.message || err);
     return [];
   }
 }
@@ -798,6 +886,7 @@ export async function fetchStateTrails(swLat, swLon, neLat, neLon) {
     ["CA State Parks", fetchCaStateParksTrails],
     ["NV", fetchNvTrails],
     ["AZ", fetchAzTrails],
+    ["UT", fetchUtTrails],
     ["NPS", fetchNpsTrails],
   ];
   const results = await Promise.all(
