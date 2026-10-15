@@ -333,6 +333,8 @@ const FEDERAL_TRAIL_STATES = {
   WY: { swLat: 40.95, swLon: -111.1, neLat: 45.05, neLon: -104.0 },
   UT: { swLat: 36.95, swLon: -114.1, neLat: 42.05, neLon: -108.95 },
   NM: { swLat: 31.3, swLon: -109.1, neLat: 37.05, neLon: -102.95 },
+  SD: { swLat: 42.45, swLon: -104.1, neLat: 45.95, neLon: -96.4 },
+  ND: { swLat: 45.9, swLon: -104.1, neLat: 49.05, neLon: -96.5 },
 };
 // Returns the state codes (e.g. ["OR","CA"]) whose extent overlaps the viewport.
 function federalTrailStatesInView(swLat, swLon, neLat, neLon) {
@@ -771,6 +773,83 @@ async function fetchUtTrails(swLat, swLon, neLat, neLon) {
   }
 }
 
+// --- South Dakota State Parks (GFP "RecreationalTrails" map service, layer 0) ---
+// Hiking and canoe/kayak trails in South Dakota's state parks. Verified via a
+// real record and 25 sample rows. Notes from that data:
+//  - Native spatial reference is Web Mercator (102100), so outSR=4326 is
+//    requested to get plain lon/lat back. The service returns at most 1000
+//    features per query.
+//  - Length is in MILES even though its field alias says feet (0.278 for a trail
+//    whose true length is ~447 m), and Shape_Length is Web Mercator meters,
+//    which is inflated by ~40% at this latitude -- so neither is used; the
+//    length is computed from the geometry.
+//  - Use flags mix "Yes"/"No" with "True"/"False" and sometimes null. A trail is
+//    kept when Hiking is yes/true, or when Hiking is blank and it isn't a
+//    water (canoe/kayak) trail; Hiking = no/false drops it. Visible = no and
+//    closed / proposed style statuses are skipped.
+//  - DifficultyRating is Easy / Moderate / "Easy to Moderate": mapped to
+//    Easy / Moderate / Strenuous, with "Easy to Moderate" counted as Moderate.
+//  - Several trails share a name inside one park (pieces of one loop), so
+//    pieces are combined per trail name AND park.
+const SD_PARKS_TRAILS_URL = "https://ert.gfp.sd.gov/arcgis/rest/services/SD_Public/RecreationalTrails/MapServer/0/query";
+async function fetchSdParksTrails(swLat, swLon, neLat, neLon) {
+  if (!federalTrailStatesInView(swLat, swLon, neLat, neLon).includes("SD")) return [];
+  const envelope = `${swLon},${swLat},${neLon},${neLat}`;
+  const url = `${SD_PARKS_TRAILS_URL}?where=${encodeURIComponent("1=1")}&geometry=${encodeURIComponent(envelope)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=TrailName,Park,SurfaceType,Hiking,Watercraft,Status,Visible,DifficultyRating&returnGeometry=true&outSR=4326&f=json`;
+  const yes = (v) => /^(yes|true|1)$/i.test(String(v || "").trim());
+  const no = (v) => /^(no|false|0)$/i.test(String(v || "").trim());
+  try {
+    const resp = await fetchWithTimeout(url, { headers: { "User-Agent": "Trailseeker/1.0 (https://github.com/jfunkstl/Trailmarker)" } });
+    if (!resp.ok) {
+      console.error(`SD parks trails query returned ${resp.status}`);
+      return [];
+    }
+    const data = await resp.json();
+    if (data.error) {
+      console.error("SD parks trails query error:", JSON.stringify(data.error).slice(0, 300));
+      return [];
+    }
+    const byKey = new Map();
+    (data.features || []).forEach((f) => {
+      const a = f.attributes || {};
+      if (no(a.Visible)) return;
+      if (/propos|planned|abandon|closed|decommission/i.test(String(a.Status || ""))) return;
+      const hikeOk = yes(a.Hiking) || (!no(a.Hiking) && !yes(a.Watercraft));
+      if (!hikeOk) return;
+      const pick = (v) => (typeof v === "string" ? v.trim() : "");
+      const name = pick(a.TrailName);
+      if (!name) return;
+      const segCoordsList = esriPathsToLatLon(f.geometry);
+      if (segCoordsList.length === 0) return;
+      const lenKm = segmentsLengthKm(segCoordsList);
+      const key = `${name}|${pick(a.Park)}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.distance_km += lenKm;
+        existing.segments += segCoordsList.length;
+        existing.segmentsGeom.push(...segCoordsList);
+      } else {
+        const rating = String(a.DifficultyRating || "");
+        byKey.set(key, {
+          name,
+          distance_km: lenKm,
+          // "Easy to Moderate" counts as Moderate (the harder end)
+          difficulty: /easy/i.test(rating) && /moderate|intermediate/i.test(rating) ? "Moderate" : ratingFromText(rating),
+          surface: pick(a.SurfaceType) || null,
+          lat: segCoordsList[0][0][0],
+          lon: segCoordsList[0][0][1],
+          segments: segCoordsList.length,
+          segmentsGeom: segCoordsList,
+        });
+      }
+    });
+    return Array.from(byKey.values()).map((t) => ({ ...t, distance_km: Math.round(t.distance_km * 10) / 10 }));
+  } catch (err) {
+    console.error("SD parks trails lookup failed:", err.message || err);
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // National Park Service trails (NPS_Public_Trails) -- every NPS unit in the US
 // (Yellowstone, Glacier, Grand Teton, Yosemite, ...), not tied to one state.
@@ -888,6 +967,7 @@ export async function fetchStateTrails(swLat, swLon, neLat, neLon) {
     ["NV", fetchNvTrails],
     ["AZ", fetchAzTrails],
     ["UT", fetchUtTrails],
+    ["SD State Parks", fetchSdParksTrails],
     ["NPS", fetchNpsTrails],
   ];
   const results = await Promise.all(
