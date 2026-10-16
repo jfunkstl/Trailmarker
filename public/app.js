@@ -349,6 +349,108 @@ function updateStatLine() {
   document.getElementById("statLine").textContent = `${hikes.length} hikes logged · ${fmtDist(total)} total`;
 }
 
+// ---------- map layers: street / satellite ----------
+// One shared setting ("street" or "satellite", remembered on this phone) that
+// every map in the app follows. The Earth button on the map screen -- and the
+// little Earth button on the Create, Edit, Track and trail maps -- flips it,
+// and every map that's currently open switches at once.
+// Street = OpenStreetMap. Satellite = Esri World Imagery, with Esri's place
+// and boundary labels on top. Each needs its credit line shown, which is
+// handled in addBasemapTo(). Both allow zooming to level 19 so switching
+// between them never leaves a map blank (tiles are enlarged past their
+// native detail level).
+const BASEMAP_KEY = "trailmark-basemap";
+const BASEMAP_STREET = {
+  url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  options: { maxZoom: 19, maxNativeZoom: 17, attribution: "&copy; OpenStreetMap contributors" },
+};
+const BASEMAP_SATELLITE = {
+  url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  options: { maxZoom: 19, maxNativeZoom: 18, attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics" },
+};
+const BASEMAP_SATELLITE_LABELS = {
+  url: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+  options: { maxZoom: 19, maxNativeZoom: 18, opacity: 0.95 },
+};
+let currentBasemap = "street";
+try { if (localStorage.getItem(BASEMAP_KEY) === "satellite") currentBasemap = "satellite"; } catch (e) { /* storage unavailable -- stay on street */ }
+const basemapRegistry = []; // { map, layers: [] } for every map that follows the shared setting
+
+// A small, hand-drawn Earth used as the satellite button's picture.
+const EARTH_ICON_SVG = `<svg viewBox="0 0 40 40" width="30" height="30" aria-hidden="true" focusable="false">
+  <circle cx="20" cy="20" r="17.5" fill="#2b7fd4"/>
+  <circle cx="16" cy="15" r="13" fill="#5fb0ec" opacity="0.45"/>
+  <path d="M9 11 C12 8 16 9 17 12 C16 15 18 16 17 19 C15 21 14 24 15 28 C14 31 12 33 11 31 C11 27 9 24 8 21 C7 17 7 14 9 11 Z" fill="#5db35b"/>
+  <path d="M24 10 C27 9 30 11 31 14 C32 17 30 19 29 22 C29 26 27 30 24 31 C22 29 22 25 23 22 C21 19 21 15 22 12 C22 11 23 10 24 10 Z" fill="#6cc064"/>
+  <path d="M26 6 C29 6 32 8 33 10 C30 9 27 8 26 6 Z" fill="#ffffff" opacity="0.8"/>
+  <circle cx="20" cy="20" r="17.5" fill="none" stroke="#0f3f80" stroke-width="1.2" opacity="0.6"/>
+</svg>`;
+
+function buildBasemapLayers(mode) {
+  const spec = mode === "satellite" ? BASEMAP_SATELLITE : BASEMAP_STREET;
+  const layers = [L.tileLayer(spec.url, spec.options)];
+  if (mode === "satellite") layers.push(L.tileLayer(BASEMAP_SATELLITE_LABELS.url, BASEMAP_SATELLITE_LABELS.options));
+  return layers;
+}
+
+// Adds the current basemap to a map and keeps it in sync from then on.
+// opts.toggle: also put the Earth button on this map (maps that don't already
+// have one in the page). opts.attribution: show the map credit line (needed
+// on any map people actually use; skipped on the tiny preview maps).
+function addBasemapTo(map, opts = {}) {
+  if ((opts.attribution || opts.toggle) && !map.attributionControl) {
+    map.attributionControl = L.control.attribution({ prefix: false }).addTo(map);
+  }
+  const layers = buildBasemapLayers(currentBasemap);
+  layers.forEach((l) => l.addTo(map));
+  basemapRegistry.push({ map, layers });
+  if (opts.toggle) addBasemapControl(map);
+}
+
+function addBasemapControl(map) {
+  const BasemapControl = L.Control.extend({
+    options: { position: "topright" },
+    onAdd() {
+      const div = L.DomUtil.create("div", "");
+      div.innerHTML = `<button type="button" class="basemap-btn basemap-ctl-btn" aria-label="Switch between map and satellite view" title="Map / satellite">${EARTH_ICON_SVG}</button>`;
+      L.DomEvent.disableClickPropagation(div);
+      div.querySelector("button").addEventListener("click", toggleBasemap);
+      return div;
+    },
+  });
+  new BasemapControl().addTo(map);
+  refreshBasemapButtons();
+}
+
+function refreshBasemapButtons() {
+  document.querySelectorAll(".basemap-btn").forEach((btn) => {
+    btn.classList.toggle("is-satellite", currentBasemap === "satellite");
+    btn.setAttribute("aria-pressed", currentBasemap === "satellite" ? "true" : "false");
+    btn.title = currentBasemap === "satellite" ? "Satellite view on -- tap for map view" : "Tap for satellite view";
+  });
+}
+
+function setBasemap(mode) {
+  currentBasemap = mode === "satellite" ? "satellite" : "street";
+  try { localStorage.setItem(BASEMAP_KEY, currentBasemap); } catch (e) { /* non-fatal */ }
+  for (let i = basemapRegistry.length - 1; i >= 0; i--) {
+    const entry = basemapRegistry[i];
+    // Maps inside closed popups are gone from the page -- forget them.
+    if (!entry.map.getContainer() || !document.body.contains(entry.map.getContainer())) {
+      basemapRegistry.splice(i, 1);
+      continue;
+    }
+    entry.layers.forEach((l) => entry.map.removeLayer(l));
+    entry.layers = buildBasemapLayers(currentBasemap);
+    entry.layers.forEach((l) => l.addTo(entry.map));
+  }
+  refreshBasemapButtons();
+}
+function toggleBasemap() {
+  setBasemap(currentBasemap === "street" ? "satellite" : "street");
+  showToast(currentBasemap === "satellite" ? "Satellite view" : "Map view");
+}
+
 // ---------- tab switching ----------
 const tabs = ["discover", "create", "track", "journal", "explore"];
 function switchTab(tab) {
@@ -495,7 +597,7 @@ let liveDot = null;
 function ensureTrackMap() {
   if (trackMap) return trackMap;
   trackMap = L.map("trackMap", { attributionControl: false }).setView([39.5, -98.35], 4);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(trackMap);
+  addBasemapTo(trackMap, { toggle: true });
   walkedLine = L.polyline([], { color: "#2563EB", weight: 5 }).addTo(trackMap);
   return trackMap;
 }
@@ -1406,7 +1508,7 @@ let createEditor = null;
 function ensureCreateMap() {
   if (createMap) return createMap;
   createMap = L.map("createMap").setView([39.5, -98.35], 4);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(createMap);
+  addBasemapTo(createMap, { toggle: true });
   createEditor = makeEditor(createMap);
   createEditor.onTrailChange = () => updateCreateStats();
   
@@ -1762,7 +1864,7 @@ function openParkMapModal(park) {
   openModal(park.name, `<div class="w-full h-[300px] rounded-2xl overflow-hidden border border-line mb-3" id="modalMapContainer"></div>`, { mapModal: true });
   setTimeout(() => {
     const map = L.map("modalMapContainer", { attributionControl: false }).setView([park.lat, park.lon], 12);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    addBasemapTo(map, { toggle: true });
     L.marker([park.lat, park.lon]).addTo(map).bindPopup(park.name);
     activeModalMap = map;
   }, 0);
@@ -1799,7 +1901,7 @@ function openParkDetail(park) {
       attributionControl: false, zoomControl: false, dragging: false,
       scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false,
     }).setView([park.lat, park.lon], 11);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    addBasemapTo(map);
     L.marker([park.lat, park.lon]).addTo(map);
     document.getElementById("detailMiniMapOverlay").addEventListener("click", () => openParkMapModal(park));
   }, 0);
@@ -1860,7 +1962,7 @@ function openTrailMapModal(trail) {
 
   setTimeout(() => {
     const map = L.map("modalMapContainer", { attributionControl: false });
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    addBasemapTo(map, { toggle: true });
     const bounds = [];
     trail.geometry.forEach((seg) => {
       if (seg.length < 2) return;
@@ -1911,7 +2013,7 @@ function enterMapEditMode(trail) {
 
   setTimeout(() => {
     const map = L.map("editMap").setView([39.5, -98.35], 4);
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    addBasemapTo(map, { toggle: true });
     map.invalidateSize();
     editMapInstance = map;
     modalEditor = makeEditor(map);
@@ -2149,7 +2251,7 @@ function openTrailDetail(trail) {
         attributionControl: false, zoomControl: false, dragging: false,
         scrollWheelZoom: false, doubleClickZoom: false, touchZoom: false,
       });
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+      addBasemapTo(map);
       const bounds = [];
       trail.geometry.forEach((seg) => {
         if (seg.length < 2) return;
@@ -2292,7 +2394,7 @@ function openElevationModal() {
 
   setTimeout(() => {
     const map = L.map("modalElevationMap", { attributionControl: false });
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(map);
+    addBasemapTo(map);
     const bounds = [];
     (geometry || []).forEach((seg) => {
       if (seg.length < 2) return;
@@ -2762,7 +2864,7 @@ function ensureExploreMap() {
   // verified via /api/map-pins to have real trail/park/area data). A later
   // step can swap this for the user's actual location.
   exploreMap = L.map("exploreMap", { attributionControl: false }).setView([39.4, -105.7], 11);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 17 }).addTo(exploreMap);
+  addBasemapTo(exploreMap, { attribution: true });
   exploreMarkersLayer = L.layerGroup().addTo(exploreMap);
   exploreMap.on("moveend", scheduleExploreFetch);
   scheduleExploreFetch();
@@ -2813,6 +2915,12 @@ document.getElementById("exploreSearchBtn").addEventListener("click", () => {
   switchTab("discover");
 });
 
+// Earth button above the weather button: flips every map between the normal
+// map and satellite imagery (the same setting the Create / Edit / Track maps use).
+document.getElementById("exploreBasemapBtn").innerHTML = EARTH_ICON_SVG;
+document.getElementById("exploreBasemapBtn").addEventListener("click", toggleBasemap);
+refreshBasemapButtons();
+
 // Floating Create/Track/Journal buttons -- same pattern as Search above,
 // each just calling the exact switchTab() the traditional nav bar already
 // uses. No new navigation logic anywhere in this app; these are just
@@ -2846,18 +2954,18 @@ document.getElementById("exploreLocateBtn").addEventListener("click", () => {
     return;
   }
   const map = ensureExploreMap();
-  const originalIcon = btn.textContent;
+  const originalIcon = btn.innerHTML;
   btn.textContent = "…";
   btn.disabled = true;
   navigator.geolocation.getCurrentPosition(
     (pos) => {
       map.setView([pos.coords.latitude, pos.coords.longitude], 14);
-      btn.textContent = originalIcon;
+      btn.innerHTML = originalIcon;
       btn.disabled = false;
     },
     () => {
       showToast("Couldn't get your location — check permissions and try again.");
-      btn.textContent = originalIcon;
+      btn.innerHTML = originalIcon;
       btn.disabled = false;
     },
     { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
