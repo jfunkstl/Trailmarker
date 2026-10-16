@@ -372,3 +372,21 @@ html:not(.dark) .sky header p  { opacity: 0.85; }
 @media (prefers-reduced-motion: reduce) {
   .ds-cirrus { animation: none; }
 }
+
+/* =============================================================
+   Map / satellite Earth button
+   Used both on the map screen (static button) and as a small control on the
+   Create, Edit, Track and trail maps. A green ring shows when satellite is on.
+   ============================================================= */
+.basemap-btn { cursor: pointer; transition: box-shadow 0.15s ease, transform 0.1s ease; }
+.basemap-btn:active { transform: scale(0.94); }
+.basemap-btn.is-satellite { box-shadow: 0 0 0 3px rgb(var(--color-pine)), 0 1px 4px rgba(0, 0, 0, 0.35); }
+.basemap-ctl-btn {
+  width: 44px; height: 44px; border-radius: 9999px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(var(--color-card));
+  border: 1px solid rgb(var(--color-line));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.basemap-ctl-btn.is-satellite { box-shadow: 0 0 0 3px rgb(var(--color-pine)), 0 1px 4px rgba(0, 0, 0, 0.35); }
+.leaflet-container .leaflet-control-attribution { font-size: 10px; background: rgba(255, 255, 255, 0.7); }
